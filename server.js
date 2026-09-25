@@ -79,6 +79,28 @@ app.get("/health",(_req,res)=>res.json({
   workspace:!!WORKSPACE_ID
 }));
 
+// Política de privacidad pública (requerida por Meta para publicar la app).
+app.get(["/privacidad","/privacy"],(_req,res)=>{
+  res.type("html").send(`<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Política de privacidad — AI Cliente Inteligente</title>
+<style>body{font-family:system-ui,Arial,sans-serif;max-width:760px;margin:0 auto;padding:24px 16px;line-height:1.6;color:#1d1d1f}h1{font-size:1.6rem}h2{font-size:1.15rem;margin-top:1.6em}</style></head><body>
+<h1>Política de privacidad — AI Cliente Inteligente</h1>
+<p><b>Responsable:</b> William Hernández Uribe — AI Business Architect. Medellín, Colombia. Contacto: <a href="mailto:arqwilliamhernandez@gmail.com">arqwilliamhernandez@gmail.com</a>.</p>
+<h2>1. Qué datos tratamos</h2>
+<p>Cuando nos escribes por WhatsApp tratamos tu número de teléfono, el contenido de tus mensajes y los datos que decidas compartir (por ejemplo nombre, empresa o correo electrónico).</p>
+<h2>2. Para qué los usamos</h2>
+<p>Para responder tus consultas, entender tu necesidad, preparar recomendaciones, roadmaps y cotizaciones, y dar seguimiento comercial. Las cotizaciones son revisadas por una persona antes de enviarse.</p>
+<h2>3. Con quién los compartimos</h2>
+<p>Solo con los proveedores tecnológicos necesarios para prestar el servicio: Meta (WhatsApp Business Platform), nuestro proveedor de alojamiento, nuestra base de datos y el proveedor del modelo de inteligencia artificial que procesa los mensajes. No vendemos tus datos.</p>
+<h2>4. Conservación</h2>
+<p>Conservamos la información mientras exista una relación comercial o hasta que solicites su eliminación.</p>
+<h2>5. Tus derechos</h2>
+<p>Puedes conocer, actualizar, rectificar o solicitar la eliminación de tus datos, y revocar tu autorización, conforme a la Ley 1581 de 2012 de Colombia, escribiendo a <a href="mailto:arqwilliamhernandez@gmail.com">arqwilliamhernandez@gmail.com</a>. Atenderemos tu solicitud en los plazos legales.</p>
+<h2>6. Eliminación de datos</h2>
+<p>Para eliminar tus datos envía un correo a la dirección anterior con el asunto "Eliminar mis datos" indicando tu número de WhatsApp.</p>
+<p style="color:#666;font-size:.9rem">Última actualización: 25 de septiembre de 2026.</p>
+</body></html>`);
+});
+
 app.get("/webhook",(req,res)=>{
   const mode=req.query["hub.mode"];
   const token=req.query["hub.verify_token"];
