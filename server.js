@@ -4,7 +4,11 @@ const fs = require("fs");
 const path = require("path");
 
 const app = express();
-app.use(express.json({limit:"1mb"}));
+// Captura el cuerpo crudo para validar X-Hub-Signature-256 (debe ir antes de cualquier otro parser).
+app.use(express.json({
+  limit:"1mb",
+  verify:(req,_res,buf)=>{ req.rawBody=Buffer.from(buf); }
+}));
 
 const PORT = process.env.PORT || 3000;
 const VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || "";
@@ -58,19 +62,14 @@ function addMessage(phone, role, content){
 function verifyMetaSignature(req){
   if(!META_APP_SECRET) return true;
   const signature=req.get("x-hub-signature-256");
-  if(!signature) return false;
+  if(!signature||!req.rawBody) return false;
   const expected="sha256="+crypto
     .createHmac("sha256",META_APP_SECRET)
-    .update(req.rawBody || Buffer.from(JSON.stringify(req.body)))
+    .update(req.rawBody)
     .digest("hex");
-  return crypto.timingSafeEqual(Buffer.from(signature),Buffer.from(expected));
+  const a=Buffer.from(signature), b=Buffer.from(expected);
+  return a.length===b.length && crypto.timingSafeEqual(a,b);
 }
-
-// Capture raw body for optional Meta signature validation.
-app.use("/webhook", express.json({
-  limit:"1mb",
-  verify:(req,_res,buf)=>{ req.rawBody=Buffer.from(buf); }
-}));
 
 app.get("/health",(_req,res)=>res.json({
   ok:true,
@@ -94,6 +93,7 @@ async function askAI(message, phone){
   if(AI_AGENT_URL){
     const response=await fetch(AI_AGENT_URL,{
       method:"POST",
+      signal:AbortSignal.timeout(55000),
       headers:{"Content-Type":"application/json"},
       body:JSON.stringify({
         action:"chat",
@@ -115,16 +115,19 @@ async function askAI(message, phone){
         state:{...s.state,...(data.state||{})}
       });
       if(data.reply) return data.reply;
+      console.error(new Date().toISOString(),"AI sin reply:",JSON.stringify(data).slice(0,500));
+    }else{
+      const errText=await response.text().catch(()=>"");
+      console.error(new Date().toISOString(),`AI ${response.status}:`,errText.slice(0,500));
+      // Si la conversación guardada ya no existe en el workspace, empezar una nueva en el próximo mensaje.
+      if(response.status===404 && errText.includes("CONVERSATION_NOT_FOUND")) updateSession(phone,{conversation_id:null});
     }
+  }else{
+    console.error(new Date().toISOString(),"AI_AGENT_URL no configurada");
   }
 
-  // Fallback only when the real AI endpoint is not configured.
-  const t=message.toLowerCase();
-  if(t.includes("moto")) return "Perfecto 🏍️. Te ayudo con la revisión técnico-mecánica de tu moto. ¿En qué ciudad deseas realizarla?";
-  if(t.includes("carro")||t.includes("auto")) return "Perfecto 🚗. Te ayudo con la revisión técnico-mecánica de tu carro. ¿Es gasolina, diésel, híbrido o eléctrico?";
-  if(t.includes("híbr")||t.includes("electr")) return "Perfecto ⚡. ¿En qué ciudad deseas realizar la revisión?";
-  if(t.includes("tarifa")||t.includes("precio")||t.includes("cuánto")||t.includes("cuanto")) return "Claro. Puedo orientarte con la tarifa según tu vehículo y sede. Primero dime qué vehículo tienes.";
-  return "Hola 👋 Soy el asistente inteligente. Cuéntame qué vehículo tienes y qué necesitas y te ayudaré a encontrar el servicio adecuado.";
+  // Respaldo neutral: nunca inventa servicios, precios ni condiciones.
+  return "Gracias por escribirnos 🙌. En este momento no puedo procesar tu mensaje automáticamente. Un asesor de nuestro equipo te responderá pronto.";
 }
 
 async function sendWhatsAppText(to,body){
@@ -146,6 +149,16 @@ async function sendWhatsAppText(to,body){
   if(!response.ok) throw new Error(`WhatsApp ${response.status}: ${await response.text()}`);
 }
 
+// Meta puede reenviar el mismo evento; se procesa cada message.id una sola vez.
+const seen=new Set();
+function firstTime(id){
+  if(!id) return true;
+  if(seen.has(id)) return false;
+  seen.add(id);
+  if(seen.size>2000) seen.delete(seen.values().next().value);
+  return true;
+}
+
 app.post("/webhook",async(req,res)=>{
   if(!verifyMetaSignature(req)) return res.sendStatus(401);
   // Acknowledge Meta immediately.
@@ -156,14 +169,20 @@ app.post("/webhook",async(req,res)=>{
       for(const change of (entry.changes||[])){
         for(const message of (change.value?.messages||[])){
           if(message.type!=="text") continue;
+          if(!firstTime(message.id)) continue;
           const phone=message.from;
           const text=message.text?.body?.trim();
           if(!phone||!text) continue;
 
-          addMessage(phone,"user",text);
-          const reply=await askAI(text,phone);
-          addMessage(phone,"assistant",reply);
-          await sendWhatsAppText(phone,reply);
+          try{
+            addMessage(phone,"user",text);
+            const reply=await askAI(text,phone);
+            addMessage(phone,"assistant",reply);
+            await sendWhatsAppText(phone,reply);
+            console.log(new Date().toISOString(),"Respuesta enviada a ...",String(phone).slice(-4));
+          }catch(error){
+            console.error(new Date().toISOString(),"Error procesando mensaje:",error?.message||error);
+          }
         }
       }
     }
@@ -172,7 +191,10 @@ app.post("/webhook",async(req,res)=>{
   }
 });
 
-app.get("/api/conversations",(_req,res)=>{
+// Contiene teléfonos y mensajes: solo disponible si ADMIN_TOKEN está configurado y se envía como Bearer.
+app.get("/api/conversations",(req,res)=>{
+  const adminToken=process.env.ADMIN_TOKEN||"";
+  if(!adminToken || req.get("authorization")!==`Bearer ${adminToken}`) return res.sendStatus(404);
   res.json(Object.values(store()).map(x=>({
     phone:x.phone,
     lead:x.lead,
