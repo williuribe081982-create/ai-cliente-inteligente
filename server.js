@@ -160,7 +160,12 @@ function firstTime(id){
 }
 
 app.post("/webhook",async(req,res)=>{
-  if(!verifyMetaSignature(req)) return res.sendStatus(401);
+  if(!verifyMetaSignature(req)){
+    console.error(new Date().toISOString(),"Webhook rechazado: firma X-Hub-Signature-256 inválida (revisar META_APP_SECRET)", req.get("x-hub-signature-256")?"con firma":"sin firma");
+    return res.sendStatus(401);
+  }
+  const n=(req.body.entry||[]).reduce((k,e)=>k+(e.changes||[]).reduce((m,c)=>m+(c.value?.messages||[]).length,0),0);
+  console.log(new Date().toISOString(),`Webhook recibido: ${n} mensaje(s)`);
   // Acknowledge Meta immediately.
   res.sendStatus(200);
 
