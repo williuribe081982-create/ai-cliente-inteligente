@@ -14,3 +14,7 @@ El código está preparado. Para conectar el número real hacen falta los activo
 
 ## Motor existente
 El endpoint de Supabase del producto Claude queda preconfigurado como AI_AGENT_URL. La URL por sí sola no autentica el canal: hay que completar AI_PUBLIC_KEY y WORKSPACE_ID.
+
+
+## Estado
+WhatsApp webhook y despliegue preparados para prueba end-to-end.
