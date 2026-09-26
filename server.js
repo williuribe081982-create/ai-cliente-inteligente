@@ -144,7 +144,7 @@ async function callAgent(action, phone, extra={}){
   updateSession(phone,{
     conversation_id:data.conversation_id || s.conversation_id,
     lead:{...s.lead,...(data.lead||{})},
-    state:{...s.state,...(data.state||{})}
+    state:{...s.state,...(data.state||{}),...(data.auto_send_token?{auto_send_token:data.auto_send_token}: {})}
   });
 
   return data;
@@ -176,40 +176,18 @@ function getProposalId(state, lead){
 async function maybeApproveAndSend(phone){
   const session=getSession(phone);
   const proposalId=getProposalId(session.state,session.lead);
+  const autoSendToken=session.state?.auto_send_token;
 
-  if(!proposalId || !hasEmail(session.lead)) return null;
+  if(!proposalId || !hasEmail(session.lead) || !autoSendToken) return null;
 
   try{
-    const approved=await callAgent("approve",phone,{
+    const sent=await callAgent("auto_send",phone,{
       proposal_id:proposalId,
-      email:session.lead.email.trim()
+      auto_send_token:autoSendToken,
+      public_key:AI_PUBLIC_KEY
     });
 
-    const approvedOk = approved?.approved===true ||
-      approved?.success===true ||
-      approved?.status==="approved" ||
-      approved?.state==="approved";
-
-    updateSession(phone,{state:{
-      ...getSession(phone).state,
-      approval_result:{ok:approvedOk,at:new Date().toISOString(),response:approved}
-    }});
-
-    if(!approvedOk){
-      console.error(new Date().toISOString(),"approve no confirmó aprobación:",JSON.stringify(approved).slice(0,1000));
-      return null;
-    }
-
-    const sent=await callAgent("send_email",phone,{
-      proposal_id:proposalId,
-      email:session.lead.email.trim()
-    });
-
-    const sentOk=sent?.sent===true ||
-      sent?.success===true ||
-      sent?.status==="sent" ||
-      sent?.status==="success" ||
-      sent?.email_sent===true;
+    const sentOk=sent?.sent===true || sent?.ok===true || sent?.already_sent===true;
 
     updateSession(phone,{state:{
       ...getSession(phone).state,
@@ -217,13 +195,13 @@ async function maybeApproveAndSend(phone){
     }});
 
     if(!sentOk){
-      console.error(new Date().toISOString(),"send_email no confirmó éxito:",JSON.stringify(sent).slice(0,1000));
+      console.error(new Date().toISOString(),"auto_send no confirmó éxito:",JSON.stringify(sent).slice(0,1000));
       return null;
     }
 
     return {sent:true};
   }catch(error){
-    console.error(new Date().toISOString(),"Error approve/send_email:",error?.message||error);
+    console.error(new Date().toISOString(),"Error auto_send:",error?.message||error);
     return null;
   }
 }
@@ -285,7 +263,7 @@ app.post("/webhook",async(req,res)=>{
 
             const emailResult=await maybeApproveAndSend(phone);
             if(emailResult?.sent===true){
-              await sendWhatsAppText(phone,"Listo ✅ La propuesta fue enviada al correo que nos proporcionaste.");
+              await sendWhatsAppText(phone,"Listo ✅ Tu propuesta y roadmap fueron enviados al correo que nos proporcionaste.");
               console.log(new Date().toISOString(),"Propuesta enviada por email a ...",String(phone).slice(-4));
             }
 
