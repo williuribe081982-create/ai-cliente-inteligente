@@ -292,4 +292,27 @@ app.get("/api/conversations",(req,res)=>{
   })));
 });
 
-app.listen(PORT,()=>console.log(`AI Cliente Inteligente listening on :${PORT}`));
+async function recoverPendingEmails(){
+  try{
+    const all=store();
+    for(const [phone,session] of Object.entries(all)){
+      if(!session?.state?.proposal_id || !session?.state?.auto_send_token || !hasEmail(session?.lead)) continue;
+      if(session?.state?.email_result?.ok===true) continue;
+      const result=await maybeApproveAndSend(phone);
+      if(result?.sent===true){
+        try{
+          await sendWhatsAppText(phone,"Listo ✅ Tu propuesta y roadmap fueron enviados al correo que nos proporcionaste.");
+        }catch(error){
+          console.error(new Date().toISOString(),"Email enviado pero no se pudo confirmar por WhatsApp:",error?.message||error);
+        }
+      }
+    }
+  }catch(error){
+    console.error(new Date().toISOString(),"Error recuperando envíos pendientes:",error?.message||error);
+  }
+}
+
+app.listen(PORT,async()=>{
+  console.log(`AI Cliente Inteligente listening on :${PORT}`);
+  await recoverPendingEmails();
+});
