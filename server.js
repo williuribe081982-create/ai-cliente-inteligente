@@ -30,6 +30,17 @@ const store = () => {
 };
 const save = x => fs.writeFileSync(DATA_FILE, JSON.stringify(x,null,2), "utf8");
 
+function isFreshConversationRequest(message){
+  // Un saludo o una solicitud del menú de servicios inicia una conversación comercial nueva.
+  return /^\s*(hola|holi|buen[oa]s?(?: d[ií]as| tardes| noches)?|saludos)\b/i.test(message)
+    || /\b(cu[aá]les son|qu[eé]|ver|conocer|informaci[oó]n (?:de|sobre)|sus|los|tus)\s+servicios\b/i.test(message);
+}
+function resetSession(phone){
+  const all=store();
+  all[phone]={phone,lead:{},state:{},conversation_id:null,messages:[]};
+  save(all);
+  return all[phone];
+}
 function getSession(phone){
   const all=store();
   all[phone] ||= {
@@ -71,6 +82,53 @@ function verifyMetaSignature(req){
   return a.length===b.length && crypto.timingSafeEqual(a,b);
 }
 
+app.get("/p/:token",async(req,res)=>{
+  try{
+    if(!AI_AGENT_URL) return res.sendStatus(503);
+    const response=await fetch(AI_AGENT_URL,{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({action:"view",token:req.params.token})
+    });
+    const raw=await response.text();
+    if(!response.ok) return res.status(404).send("Propuesta no disponible");
+    const data=JSON.parse(raw);
+    // Roadmap interactivo con los datos de esta propuesta; si falta la plantilla, se muestra la propuesta estática.
+    const tplPath=path.join(__dirname,"roadmap.html");
+    if(data?.data && fs.existsSync(tplPath)){
+      const tpl=fs.readFileSync(tplPath,"utf8");
+      const json=JSON.stringify(data.data).replace(/</g,"\\u003c");
+      const html=tpl.replace(/\/\*DATA\*\/[\s\S]*?\/\*\/DATA\*\//,()=>"/*DATA*/"+json+"/*/DATA*/");
+      return res.set("Cache-Control","no-store").type("html").send(html);
+    }
+    if(!data?.html) return res.sendStatus(404);
+    res.set("Cache-Control","no-store").type("html").send(data.html);
+  }catch(error){
+    console.error(new Date().toISOString(),"Error vista propuesta:",error?.message||error);
+    res.sendStatus(500);
+  }
+});
+
+
+// Logo de marca usado en correos y roadmap.
+app.get("/brand/logo.png",(_req,res)=>res.set("Cache-Control","public, max-age=604800").sendFile(path.join(__dirname,"logo.png")));
+
+// AI BUSINESS ARCHITECT — workspace interno de chats
+app.get("/architect",(_req,res)=>{
+  try { res.type("html").send(fs.readFileSync(path.join(__dirname,"architect.html"),"utf8")); }
+  catch(e){ console.error("architect.html",e); res.sendStatus(500); }
+});
+app.post("/architect-api",async(req,res)=>{
+  try{
+    if(!AI_AGENT_URL || !AI_PUBLIC_KEY) return res.status(503).json({ok:false,error:"AI Business Architect no configurado"});
+    const b=req.body||{};
+    const payload={action:"architect",public_key:AI_PUBLIC_KEY,workspace_id:WORKSPACE_ID||undefined,...b};
+    const response=await fetch(AI_AGENT_URL,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload),signal:AbortSignal.timeout(60000)});
+    const raw=await response.text();
+    res.status(response.status).type("json").send(raw);
+  }catch(e){ console.error(new Date().toISOString(),"Architect API:",e?.message||e); res.status(500).json({ok:false,error:"Error del agente"}); }
+});
+
 app.get("/health",(_req,res)=>res.json({
   ok:true,
   product:"AI Cliente Inteligente",
@@ -78,25 +136,6 @@ app.get("/health",(_req,res)=>res.json({
   ai:!!AI_AGENT_URL,
   workspace:!!WORKSPACE_ID
 }));
-
-// Recursos de marca (logos) usados en las propuestas y correos.
-app.get("/brand/logo.png",(_req,res)=>res.set("Cache-Control","public, max-age=604800").sendFile(path.join(__dirname,"logo.png")));
-
-// Propuesta pública: el cliente la abre desde el botón "Ver mi propuesta" del correo.
-// Solo muestra propuestas aprobadas; el token es un UUID aleatorio por propuesta.
-app.get("/p/:token",async(req,res)=>{
-  const token=String(req.params.token||"");
-  if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(token)||!AI_AGENT_URL) return res.status(404).send("Propuesta no disponible");
-  try{
-    const r=await fetch(AI_AGENT_URL,{method:"POST",signal:AbortSignal.timeout(30000),headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"view",token})});
-    const d=await r.json().catch(()=>({}));
-    if(!r.ok||!d.html) return res.status(404).send("Propuesta no disponible");
-    res.set("Cache-Control","no-store").type("html").send(d.html);
-  }catch(error){
-    console.error(new Date().toISOString(),"Error mostrando propuesta:",error?.message||error);
-    res.status(502).send("No pudimos cargar la propuesta. Intenta de nuevo en un momento.");
-  }
-});
 
 // Política de privacidad pública (requerida por Meta para publicar la app).
 app.get(["/privacidad","/privacy"],(_req,res)=>{
@@ -107,7 +146,7 @@ app.get(["/privacidad","/privacy"],(_req,res)=>{
 <h2>1. Qué datos tratamos</h2>
 <p>Cuando nos escribes por WhatsApp tratamos tu número de teléfono, el contenido de tus mensajes y los datos que decidas compartir (por ejemplo nombre, empresa o correo electrónico).</p>
 <h2>2. Para qué los usamos</h2>
-<p>Para responder tus consultas, entender tu necesidad, preparar recomendaciones, roadmaps y cotizaciones, y dar seguimiento comercial. Las cotizaciones son revisadas por una persona antes de enviarse.</p>
+<p>Para responder tus consultas, entender tu necesidad, preparar recomendaciones, roadmaps y cotizaciones, y dar seguimiento comercial. Cuando se cumplen las reglas comerciales autorizadas y confirmas que deseas avanzar, el sistema puede preparar y enviar automáticamente la propuesta y el roadmap por correo.</p>
 <h2>3. Con quién los compartimos</h2>
 <p>Solo con los proveedores tecnológicos necesarios para prestar el servicio: Meta (WhatsApp Business Platform), nuestro proveedor de alojamiento, nuestra base de datos y el proveedor del modelo de inteligencia artificial que procesa los mensajes. No vendemos tus datos.</p>
 <h2>4. Conservación</h2>
@@ -128,102 +167,124 @@ app.get("/webhook",(req,res)=>{
   return res.sendStatus(403);
 });
 
-async function askAI(message, phone){
-  let s=getSession(phone);
+async function callAgent(action, phone, extra={}){
+  const s=getSession(phone);
+  if(!AI_AGENT_URL) throw new Error("AI_AGENT_URL no configurada");
 
-  // Un saludo después de una conversación anterior inicia un hilo comercial nuevo.
-  // Así un nuevo prospecto en el mismo número nunca hereda email, nombre, empresa,
-  // propuesta ni contexto de una conversación anterior.
-  const startsNewConversation = /^(hola|buenas|buenos días|buenas tardes|buenas noches|saludos)\b/i.test(String(message).trim());
-  if(startsNewConversation && s.messages.length){
-    s={phone,lead:{},state:{},conversation_id:null,messages:[]};
-    updateSession(phone,s);
-  }
-
-  if(AI_AGENT_URL){
-    const currentEmail = (String(message).match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)||[])[0] || "";
-    const leadForRequest = startsNewConversation
-      ? {phone, ...(currentEmail ? {email:currentEmail} : {})}
-      : {phone, name:s.lead.name, company:s.lead.company, ...(currentEmail ? {email:currentEmail} : {})};
-
-    const response=await fetch(AI_AGENT_URL,{
-      method:"POST",
-      signal:AbortSignal.timeout(55000),
-      headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({
-        action:"chat",
-        public_key:AI_PUBLIC_KEY,
-        workspace_id:WORKSPACE_ID || undefined,
-        message,
-        new_conversation:startsNewConversation,
-        conversation_id:startsNewConversation ? null : (s.conversation_id || null),
-        lead:leadForRequest,
-        state:startsNewConversation ? {} : s.state,
-        history:startsNewConversation ? [] : s.messages.slice(-16)
-      })
-    });
-
-    if(response.ok){
-      const data=await response.json();
-      updateSession(phone,{
-        conversation_id:data.conversation_id || s.conversation_id,
-        lead:{...s.lead,...(data.lead||{})},
-        state:{...s.state,...(data.state||{})}
-      });
-      if(data.reply) return {reply:data.reply,data};
-      console.error(new Date().toISOString(),"AI sin reply:",JSON.stringify(data).slice(0,500));
-    }else{
-      const errText=await response.text().catch(()=>"");
-      console.error(new Date().toISOString(),`AI ${response.status}:`,errText.slice(0,500));
-      // Si la conversación guardada ya no existe en el workspace, empezar una nueva en el próximo mensaje.
-      if(response.status===404 && errText.includes("CONVERSATION_NOT_FOUND")) updateSession(phone,{conversation_id:null});
-    }
-  }else{
-    console.error(new Date().toISOString(),"AI_AGENT_URL no configurada");
-  }
-
-  // Respaldo neutral: nunca inventa servicios, precios ni condiciones.
-  return {reply:"Gracias por escribirnos 🙌. En este momento no puedo procesar tu mensaje automáticamente. Un asesor de nuestro equipo te responderá pronto.",data:null};
-}
-
-async function autoSendProposal(data){
-  const proposal=data?.proposal;
-  const token=proposal?.auto_send_token;
-  const proposalId=proposal?.id;
-  if(!token || !proposalId) return {sent:false};
   const response=await fetch(AI_AGENT_URL,{
     method:"POST",
     signal:AbortSignal.timeout(55000),
     headers:{"Content-Type":"application/json"},
     body:JSON.stringify({
-      action:"auto_send",
+      action,
       public_key:AI_PUBLIC_KEY,
-      proposal_id:proposalId,
-      auto_send_token:token
+      workspace_id:WORKSPACE_ID || undefined,
+      conversation_id:s.conversation_id || null,
+      lead:{phone,...s.lead},
+      state:s.state,
+      history:s.messages.slice(-16),
+      ...extra
     })
   });
-  const body=await response.json().catch(()=>({}));
-  if(!response.ok || !body.sent) {
-    console.error(new Date().toISOString(),"Auto email no enviado:",response.status,JSON.stringify(body).slice(0,700));
-    return {sent:false,error:body};
+
+  const raw=await response.text();
+  let data={};
+  try{ data=raw?JSON.parse(raw):{}; }catch{}
+
+  if(!response.ok){
+    console.error(new Date().toISOString(),`AI ${action} ${response.status}:`,raw.slice(0,1000));
+    if(response.status===404 && raw.includes("CONVERSATION_NOT_FOUND")){
+      updateSession(phone,{conversation_id:null});
+    }
+    throw new Error(`AI ${action} ${response.status}`);
   }
-  return {sent:true,recipient:body.recipient||null};
+
+  updateSession(phone,{
+    conversation_id:data.conversation_id || s.conversation_id,
+    lead:{...s.lead,...(data.lead||{})},
+    state:{...s.state,...(data.state||{}),...(data.auto_send_token?{auto_send_token:data.auto_send_token}: {})}
+  });
+
+  return data;
 }
 
-async function runPendingAutoSend(){
-  if(!AI_AGENT_URL||!AI_PUBLIC_KEY) return;
+async function askAI(message, phone, newConversation=false){
   try{
-    const r=await fetch(AI_AGENT_URL,{
-      method:"POST",
-      signal:AbortSignal.timeout(55000),
-      headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({action:"auto_send_pending",public_key:AI_PUBLIC_KEY})
-    });
-    const d=await r.json().catch(()=>({}));
-    if(!r.ok) console.error(new Date().toISOString(),"Auto-send pending error:",r.status,JSON.stringify(d).slice(0,700));
-    else if(d.processed) console.log(new Date().toISOString(),"Auto-send pending:",JSON.stringify(d).slice(0,700));
+    const data=await callAgent("chat",phone,{message,...(newConversation?{new_conversation:true}: {})});
+
+    // Persistir explícitamente la propuesta/autorización devuelta por ci-agent.
+    // Esto evita perder el vínculo entre la conversación actual y el envío automático.
+    if(data?.proposal?.id){
+      const current=getSession(phone);
+      updateSession(phone,{
+        state:{
+          ...current.state,
+          proposal_id:data.proposal.id,
+          proposal_ready:true,
+          ...(data.proposal.auto_send_token
+            ? {auto_send_token:data.proposal.auto_send_token}
+            : {})
+        }
+      });
+    }
+
+    return data.reply || "Gracias por escribirnos 🙌. No recibí una respuesta válida del agente.";
   }catch(error){
-    console.error(new Date().toISOString(),"Auto-send pending exception:",error?.message||error);
+    console.error(new Date().toISOString(),"Error chat:",error?.message||error);
+    return "Gracias por escribirnos 🙌. En este momento no puedo procesar tu mensaje automáticamente. Un asesor de nuestro equipo te responderá pronto.";
+  }
+}
+
+function hasEmail(lead){
+  return typeof lead?.email==="string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(lead.email.trim());
+}
+
+function getProposalId(state, lead){
+  // A proposal is only eligible for automatic sending when the CURRENT
+  // conversation has explicitly reached the proposal stage. Historical
+  // proposal ids are deliberately ignored during normal chat recovery.
+  if(state?.proposal_ready === true || state?.current_proposal_ready === true){
+    return state?.proposal_id ||
+      state?.quote_id ||
+      state?.proposal?.id ||
+      lead?.proposal_id ||
+      lead?.quote_id ||
+      null;
+  }
+  return null;
+}
+
+async function maybeApproveAndSend(phone){
+  const session=getSession(phone);
+  const proposalId=getProposalId(session.state,session.lead);
+  const autoSendToken=session.state?.auto_send_token;
+
+  if(!proposalId || !hasEmail(session.lead) || !autoSendToken) return null;
+  if(session.state?.email_result?.ok===true) return null; // ya enviado: no repetir envío ni confirmación
+
+  try{
+    const sent=await callAgent("auto_send",phone,{
+      proposal_id:proposalId,
+      auto_send_token:autoSendToken,
+      public_key:AI_PUBLIC_KEY
+    });
+
+    const sentOk=sent?.sent===true || sent?.ok===true || sent?.already_sent===true;
+
+    updateSession(phone,{state:{
+      ...getSession(phone).state,
+      email_result:{ok:sentOk,at:new Date().toISOString(),response:sent}
+    }});
+
+    if(!sentOk){
+      console.error(new Date().toISOString(),"auto_send no confirmó éxito:",JSON.stringify(sent).slice(0,1000));
+      return null;
+    }
+
+    return {sent:true};
+  }catch(error){
+    console.error(new Date().toISOString(),"Error auto_send:",error?.message||error);
+    return null;
   }
 }
 
@@ -276,17 +337,35 @@ app.post("/webhook",async(req,res)=>{
           const text=message.text?.body?.trim();
           if(!phone||!text) continue;
 
+          // Una nueva solicitud de servicios inicia una sesión comercial limpia.
+          // No reutilizar nombre, email, propuesta, sector ni estado de una conversación anterior.
+          if(isFreshConversationRequest(text)) resetSession(phone);
+
           try{
             addMessage(phone,"user",text);
-            const result=await askAI(text,phone);
-            let reply=result.reply;
-            // El correo solo se confirma después de que Resend devuelve éxito.
-            const emailResult=await autoSendProposal(result.data);
-            if(emailResult.sent){
-              reply += "\n\nTu cotización y roadmap ya fueron enviados correctamente a tu correo electrónico.";
-            }
+            const reply=await askAI(text,phone,isFreshConversationRequest(text));
             addMessage(phone,"assistant",reply);
             await sendWhatsAppText(phone,reply);
+
+            const emailResult=await maybeApproveAndSend(phone);
+            if(emailResult?.sent===true){
+              await sendWhatsAppText(phone,"Listo ✅ Tu propuesta y roadmap fueron enviados al correo que nos proporcionaste.");
+              console.log(new Date().toISOString(),"Propuesta enviada por email a ...",String(phone).slice(-4));
+            } else {
+              // Watchdog: si el primer intento falla, reintenta a los 15s, 45s, 90s y 150s (siempre dentro de 3 minutos).
+              [15000,45000,90000,150000].forEach((delay)=>setTimeout(async()=>{
+                try{
+                  const result=await maybeApproveAndSend(phone);
+                  if(result?.sent===true){
+                    await sendWhatsAppText(phone,"Listo ✅ Tu propuesta y roadmap fueron enviados al correo que nos proporcionaste.");
+                    console.log(new Date().toISOString(),"Propuesta enviada por email mediante reintento a ...",String(phone).slice(-4));
+                  }
+                }catch(error){
+                  console.error(new Date().toISOString(),"Error watchdog email:",error?.message||error);
+                }
+              },delay));
+            }
+
             console.log(new Date().toISOString(),"Respuesta enviada a ...",String(phone).slice(-4));
           }catch(error){
             console.error(new Date().toISOString(),"Error procesando mensaje:",error?.message||error);
@@ -312,4 +391,27 @@ app.get("/api/conversations",(req,res)=>{
   })));
 });
 
-app.listen(PORT,()=>{ console.log(`AI Cliente Inteligente listening on :${PORT}`); setTimeout(runPendingAutoSend,5000); setInterval(runPendingAutoSend,60000); });
+async function recoverPendingEmails(){
+  try{
+    const all=store();
+    for(const [phone,session] of Object.entries(all)){
+      if(!session?.state?.proposal_id || !session?.state?.auto_send_token || !hasEmail(session?.lead)) continue;
+      if(session?.state?.email_result?.ok===true) continue;
+      const result=await maybeApproveAndSend(phone);
+      if(result?.sent===true){
+        try{
+          await sendWhatsAppText(phone,"Listo ✅ Tu propuesta y roadmap fueron enviados al correo que nos proporcionaste.");
+        }catch(error){
+          console.error(new Date().toISOString(),"Email enviado pero no se pudo confirmar por WhatsApp:",error?.message||error);
+        }
+      }
+    }
+  }catch(error){
+    console.error(new Date().toISOString(),"Error recuperando envíos pendientes:",error?.message||error);
+  }
+}
+
+app.listen(PORT,async()=>{
+  console.log(`AI Cliente Inteligente listening on :${PORT}`);
+  await recoverPendingEmails();
+});
