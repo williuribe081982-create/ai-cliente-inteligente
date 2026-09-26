@@ -109,47 +109,123 @@ app.get("/webhook",(req,res)=>{
   return res.sendStatus(403);
 });
 
-async function askAI(message, phone){
+async function callAgent(action, phone, extra={}){
   const s=getSession(phone);
+  if(!AI_AGENT_URL) throw new Error("AI_AGENT_URL no configurada");
 
-  if(AI_AGENT_URL){
-    const response=await fetch(AI_AGENT_URL,{
-      method:"POST",
-      signal:AbortSignal.timeout(55000),
-      headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({
-        action:"chat",
-        public_key:AI_PUBLIC_KEY,
-        workspace_id:WORKSPACE_ID || undefined,
-        message,
-        conversation_id:s.conversation_id || null,
-        lead:{phone,...s.lead},
-        state:s.state,
-        history:s.messages.slice(-16)
-      })
-    });
+  const response=await fetch(AI_AGENT_URL,{
+    method:"POST",
+    signal:AbortSignal.timeout(55000),
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({
+      action,
+      public_key:AI_PUBLIC_KEY,
+      workspace_id:WORKSPACE_ID || undefined,
+      conversation_id:s.conversation_id || null,
+      lead:{phone,...s.lead},
+      state:s.state,
+      history:s.messages.slice(-16),
+      ...extra
+    })
+  });
 
-    if(response.ok){
-      const data=await response.json();
-      updateSession(phone,{
-        conversation_id:data.conversation_id || s.conversation_id,
-        lead:{...s.lead,...(data.lead||{})},
-        state:{...s.state,...(data.state||{})}
-      });
-      if(data.reply) return data.reply;
-      console.error(new Date().toISOString(),"AI sin reply:",JSON.stringify(data).slice(0,500));
-    }else{
-      const errText=await response.text().catch(()=>"");
-      console.error(new Date().toISOString(),`AI ${response.status}:`,errText.slice(0,500));
-      // Si la conversación guardada ya no existe en el workspace, empezar una nueva en el próximo mensaje.
-      if(response.status===404 && errText.includes("CONVERSATION_NOT_FOUND")) updateSession(phone,{conversation_id:null});
+  const raw=await response.text();
+  let data={};
+  try{ data=raw?JSON.parse(raw):{}; }catch{}
+
+  if(!response.ok){
+    console.error(new Date().toISOString(),\`AI \${action} \${response.status}:\`,raw.slice(0,1000));
+    if(response.status===404 && raw.includes("CONVERSATION_NOT_FOUND")){
+      updateSession(phone,{conversation_id:null});
     }
-  }else{
-    console.error(new Date().toISOString(),"AI_AGENT_URL no configurada");
+    throw new Error(\`AI \${action} \${response.status}\`);
   }
 
-  // Respaldo neutral: nunca inventa servicios, precios ni condiciones.
-  return "Gracias por escribirnos 🙌. En este momento no puedo procesar tu mensaje automáticamente. Un asesor de nuestro equipo te responderá pronto.";
+  updateSession(phone,{
+    conversation_id:data.conversation_id || s.conversation_id,
+    lead:{...s.lead,...(data.lead||{})},
+    state:{...s.state,...(data.state||{})}
+  });
+
+  return data;
+}
+
+async function askAI(message, phone){
+  try{
+    const data=await callAgent("chat",phone,{message});
+    return data.reply || "Gracias por escribirnos 🙌. No recibí una respuesta válida del agente.";
+  }catch(error){
+    console.error(new Date().toISOString(),"Error chat:",error?.message||error);
+    return "Gracias por escribirnos 🙌. En este momento no puedo procesar tu mensaje automáticamente. Un asesor de nuestro equipo te responderá pronto.";
+  }
+}
+
+function hasEmail(lead){
+  return typeof lead?.email==="string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(lead.email.trim());
+}
+
+function getProposalId(state, lead){
+  return state?.proposal_id ||
+    state?.quote_id ||
+    state?.proposal?.id ||
+    lead?.proposal_id ||
+    lead?.quote_id ||
+    null;
+}
+
+async function maybeApproveAndSend(phone){
+  const session=getSession(phone);
+  const proposalId=getProposalId(session.state,session.lead);
+
+  if(!proposalId || !hasEmail(session.lead)) return null;
+
+  try{
+    const approved=await callAgent("approve",phone,{
+      proposal_id:proposalId,
+      email:session.lead.email.trim()
+    });
+
+    const approvedOk = approved?.approved===true ||
+      approved?.success===true ||
+      approved?.status==="approved" ||
+      approved?.state==="approved";
+
+    updateSession(phone,{state:{
+      ...getSession(phone).state,
+      approval_result:{ok:approvedOk,at:new Date().toISOString(),response:approved}
+    }});
+
+    if(!approvedOk){
+      console.error(new Date().toISOString(),"approve no confirmó aprobación:",JSON.stringify(approved).slice(0,1000));
+      return null;
+    }
+
+    const sent=await callAgent("send_email",phone,{
+      proposal_id:proposalId,
+      email:session.lead.email.trim()
+    });
+
+    const sentOk=sent?.sent===true ||
+      sent?.success===true ||
+      sent?.status==="sent" ||
+      sent?.status==="success" ||
+      sent?.email_sent===true;
+
+    updateSession(phone,{state:{
+      ...getSession(phone).state,
+      email_result:{ok:sentOk,at:new Date().toISOString(),response:sent}
+    }});
+
+    if(!sentOk){
+      console.error(new Date().toISOString(),"send_email no confirmó éxito:",JSON.stringify(sent).slice(0,1000));
+      return null;
+    }
+
+    return {sent:true};
+  }catch(error){
+    console.error(new Date().toISOString(),"Error approve/send_email:",error?.message||error);
+    return null;
+  }
 }
 
 async function sendWhatsAppText(to,body){
@@ -206,6 +282,13 @@ app.post("/webhook",async(req,res)=>{
             const reply=await askAI(text,phone);
             addMessage(phone,"assistant",reply);
             await sendWhatsAppText(phone,reply);
+
+            const emailResult=await maybeApproveAndSend(phone);
+            if(emailResult?.sent===true){
+              await sendWhatsAppText(phone,"Listo ✅ La propuesta fue enviada al correo que nos proporcionaste.");
+              console.log(new Date().toISOString(),"Propuesta enviada por email a ...",String(phone).slice(-4));
+            }
+
             console.log(new Date().toISOString(),"Respuesta enviada a ...",String(phone).slice(-4));
           }catch(error){
             console.error(new Date().toISOString(),"Error procesando mensaje:",error?.message||error);
