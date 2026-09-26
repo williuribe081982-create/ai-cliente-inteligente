@@ -165,12 +165,18 @@ function hasEmail(lead){
 }
 
 function getProposalId(state, lead){
-  return state?.proposal_id ||
-    state?.quote_id ||
-    state?.proposal?.id ||
-    lead?.proposal_id ||
-    lead?.quote_id ||
-    null;
+  // A proposal is only eligible for automatic sending when the CURRENT
+  // conversation has explicitly reached the proposal stage. Historical
+  // proposal ids are deliberately ignored during normal chat recovery.
+  if(state?.proposal_ready === true || state?.current_proposal_ready === true){
+    return state?.proposal_id ||
+      state?.quote_id ||
+      state?.proposal?.id ||
+      lead?.proposal_id ||
+      lead?.quote_id ||
+      null;
+  }
+  return null;
 }
 
 async function maybeApproveAndSend(phone){
