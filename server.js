@@ -129,9 +129,23 @@ app.get("/webhook",(req,res)=>{
 });
 
 async function askAI(message, phone){
-  const s=getSession(phone);
+  let s=getSession(phone);
+
+  // Un saludo después de una conversación anterior inicia un hilo comercial nuevo.
+  // Así un nuevo prospecto en el mismo número nunca hereda email, nombre, empresa,
+  // propuesta ni contexto de una conversación anterior.
+  const startsNewConversation = /^(hola|buenas|buenos días|buenas tardes|buenas noches|saludos)\b/i.test(String(message).trim());
+  if(startsNewConversation && s.messages.length){
+    s={phone,lead:{},state:{},conversation_id:null,messages:[]};
+    updateSession(phone,s);
+  }
 
   if(AI_AGENT_URL){
+    const currentEmail = (String(message).match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)||[])[0] || "";
+    const leadForRequest = startsNewConversation
+      ? {phone, ...(currentEmail ? {email:currentEmail} : {})}
+      : {phone, name:s.lead.name, company:s.lead.company, ...(currentEmail ? {email:currentEmail} : {})};
+
     const response=await fetch(AI_AGENT_URL,{
       method:"POST",
       signal:AbortSignal.timeout(55000),
@@ -141,10 +155,11 @@ async function askAI(message, phone){
         public_key:AI_PUBLIC_KEY,
         workspace_id:WORKSPACE_ID || undefined,
         message,
-        conversation_id:s.conversation_id || null,
-        lead:{phone,...s.lead},
-        state:s.state,
-        history:s.messages.slice(-16)
+        new_conversation:startsNewConversation,
+        conversation_id:startsNewConversation ? null : (s.conversation_id || null),
+        lead:leadForRequest,
+        state:startsNewConversation ? {} : s.state,
+        history:startsNewConversation ? [] : s.messages.slice(-16)
       })
     });
 
@@ -155,7 +170,7 @@ async function askAI(message, phone){
         lead:{...s.lead,...(data.lead||{})},
         state:{...s.state,...(data.state||{})}
       });
-      if(data.reply) return data.reply;
+      if(data.reply) return {reply:data.reply,data};
       console.error(new Date().toISOString(),"AI sin reply:",JSON.stringify(data).slice(0,500));
     }else{
       const errText=await response.text().catch(()=>"");
@@ -168,7 +183,31 @@ async function askAI(message, phone){
   }
 
   // Respaldo neutral: nunca inventa servicios, precios ni condiciones.
-  return "Gracias por escribirnos 🙌. En este momento no puedo procesar tu mensaje automáticamente. Un asesor de nuestro equipo te responderá pronto.";
+  return {reply:"Gracias por escribirnos 🙌. En este momento no puedo procesar tu mensaje automáticamente. Un asesor de nuestro equipo te responderá pronto.",data:null};
+}
+
+async function autoSendProposal(data){
+  const proposal=data?.proposal;
+  const token=proposal?.auto_send_token;
+  const proposalId=proposal?.id;
+  if(!token || !proposalId) return {sent:false};
+  const response=await fetch(AI_AGENT_URL,{
+    method:"POST",
+    signal:AbortSignal.timeout(55000),
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({
+      action:"auto_send",
+      public_key:AI_PUBLIC_KEY,
+      proposal_id:proposalId,
+      auto_send_token:token
+    })
+  });
+  const body=await response.json().catch(()=>({}));
+  if(!response.ok || !body.sent) {
+    console.error(new Date().toISOString(),"Auto email no enviado:",response.status,JSON.stringify(body).slice(0,700));
+    return {sent:false,error:body};
+  }
+  return {sent:true,recipient:body.recipient||null};
 }
 
 async function sendWhatsAppText(to,body){
@@ -222,7 +261,13 @@ app.post("/webhook",async(req,res)=>{
 
           try{
             addMessage(phone,"user",text);
-            const reply=await askAI(text,phone);
+            const result=await askAI(text,phone);
+            let reply=result.reply;
+            // El correo solo se confirma después de que Resend devuelve éxito.
+            const emailResult=await autoSendProposal(result.data);
+            if(emailResult.sent){
+              reply += "\n\nTu cotización y roadmap ya fueron enviados correctamente a tu correo electrónico.";
+            }
             addMessage(phone,"assistant",reply);
             await sendWhatsAppText(phone,reply);
             console.log(new Date().toISOString(),"Respuesta enviada a ...",String(phone).slice(-4));
