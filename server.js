@@ -100,6 +100,23 @@ app.get("/p/:token",async(req,res)=>{
   }
 });
 
+
+// AI BUSINESS ARCHITECT — workspace interno de chats
+app.get("/architect",(_req,res)=>{
+  try { res.type("html").send(fs.readFileSync(path.join(__dirname,"architect.html"),"utf8")); }
+  catch(e){ console.error("architect.html",e); res.sendStatus(500); }
+});
+app.post("/architect-api",async(req,res)=>{
+  try{
+    if(!AI_AGENT_URL || !AI_PUBLIC_KEY) return res.status(503).json({ok:false,error:"AI Business Architect no configurado"});
+    const b=req.body||{};
+    const payload={action:"architect",public_key:AI_PUBLIC_KEY,workspace_id:WORKSPACE_ID||undefined,...b};
+    const response=await fetch(AI_AGENT_URL,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload),signal:AbortSignal.timeout(60000)});
+    const raw=await response.text();
+    res.status(response.status).type("json").send(raw);
+  }catch(e){ console.error(new Date().toISOString(),"Architect API:",e?.message||e); res.status(500).json({ok:false,error:"Error del agente"}); }
+});
+
 app.get("/health",(_req,res)=>res.json({
   ok:true,
   product:"AI Cliente Inteligente",
