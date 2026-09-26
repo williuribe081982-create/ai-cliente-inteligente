@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI BUSINESS ARCHITECT</title>
+<style>
+:root{--bg:#090d16;--panel:#0f1522;--panel2:#121a29;--line:#202b3f;--txt:#eef2f7;--mut:#8d98ab;--gold:#c9a36a;--blue:#5fa8ff}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--txt);font-family:Inter,system-ui,Arial,sans-serif;height:100vh;overflow:hidden}
+.app{display:grid;grid-template-columns:285px 1fr;height:100vh}.side{background:#0b1019;border-right:1px solid var(--line);display:flex;flex-direction:column}.brand{padding:22px 20px 16px;border-bottom:1px solid var(--line)}.brand b{font-size:14px;letter-spacing:.13em}.brand span{display:block;color:var(--gold);font-size:10px;letter-spacing:.18em;margin-top:7px}
+.new{margin:14px;border:1px solid #35445f;background:var(--panel2);color:var(--txt);border-radius:10px;padding:11px 13px;text-align:left;cursor:pointer}.new:hover{border-color:var(--gold)}
+.search{margin:0 14px 10px}.search input{width:100%;background:#0b111d;border:1px solid var(--line);border-radius:8px;padding:9px 10px;color:var(--txt);outline:none}
+.chats{overflow:auto;padding:0 8px 18px}.chat{padding:11px 12px;border-radius:9px;cursor:pointer;margin:2px 0}.chat:hover,.chat.active{background:#151e2d}.chat .t{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.chat .m{font-size:10px;color:var(--mut);margin-top:4px}
+.main{display:flex;flex-direction:column;min-width:0}.top{height:66px;border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 24px;justify-content:space-between}.top h1{font-size:15px;margin:0;font-weight:600}.top small{color:var(--mut)}.messages{flex:1;overflow:auto;padding:36px max(24px,calc((100vw - 950px)/2));}.welcome{max-width:720px;margin:10vh auto;text-align:center}.welcome h2{font-size:31px;font-weight:500;margin:0 0 12px}.welcome p{color:var(--mut);line-height:1.7}.welcome .pill{display:inline-block;border:1px solid #35445f;border-radius:999px;padding:8px 13px;margin:6px;color:#cbd4e2;font-size:12px}
+.msg{max-width:850px;margin:0 auto 24px;display:flex;gap:13px}.avatar{width:30px;height:30px;border-radius:8px;background:#172238;border:1px solid #2d3c58;display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--gold);flex:0 0 auto}.msg.user .avatar{background:#1b2638;color:var(--blue)}.bubble{white-space:pre-wrap;line-height:1.65;font-size:15px;flex:1}.msg.user .bubble{background:#111a28;border:1px solid var(--line);border-radius:12px;padding:13px 15px}
+.composer{border-top:1px solid var(--line);padding:16px 24px 20px;background:#0b1019}.box{max-width:900px;margin:auto;display:flex;gap:10px;background:#111927;border:1px solid #2a3851;border-radius:14px;padding:10px}.box textarea{flex:1;background:transparent;border:0;outline:0;color:var(--txt);resize:none;font:inherit;min-height:48px;max-height:150px}.send{border:0;background:linear-gradient(135deg,var(--gold),#e1c18d);color:#18120a;border-radius:10px;padding:0 18px;font-weight:700;cursor:pointer}.send:disabled{opacity:.45}.hint{max-width:900px;margin:7px auto 0;color:#657187;font-size:10px}
+@media(max-width:760px){.app{grid-template-columns:1fr}.side{display:none}.messages{padding:24px 14px}.composer{padding:12px}}
+</style></head>
+<body><div class="app">
+<aside class="side"><div class="brand"><b>AI BUSINESS ARCHITECT</b><span>NEGOCIO ANTES QUE TECNOLOGÍA</span></div>
+<button class="new" onclick="newChat()">＋ Nuevo chat</button><div class="search"><input id="q" placeholder="Buscar chats..." oninput="renderChats()"></div><div id="chats" class="chats"></div></aside>
+<main class="main"><header class="top"><div><h1 id="title">AI BUSINESS ARCHITECT CORE</h1><small id="sub">Arquitectura · Diagnóstico · IA · Automatización</small></div><small>William Hernández</small></header>
+<section id="messages" class="messages"><div class="welcome"><h2>AI BUSINESS ARCHITECT</h2><p>Analizamos el negocio antes de elegir tecnología. Puedes abrir un chat independiente para cada cliente, proyecto, diagnóstico o experimento.</p><span class="pill">Diagnóstico</span><span class="pill">Arquitectura</span><span class="pill">IA</span><span class="pill">Roadmap</span></div></section>
+<footer class="composer"><div class="box"><textarea id="input" placeholder="Escribe al AI BUSINESS ARCHITECT..." onkeydown="key(event)"></textarea><button id="send" class="send" onclick="send()">Enviar</button></div><div class="hint">Cada chat mantiene su propio contexto. Puedes crear uno nuevo para cada cliente o trabajo.</div></footer>
+</main></div>
+<script>
+let chats=[],active=null,busy=false;
+async function api(body){const r=await fetch('/architect-api',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const d=await r.json();if(!r.ok||d.ok===false)throw new Error(d.error||'Error');return d}
+function saveLocal(){localStorage.setItem('aba_chats',JSON.stringify(chats))}
+async function init(){try{const d=await api({op:'list'});chats=d.chats||[];active=chats[0]?.id||null;renderChats();renderMessages()}catch(e){chats=JSON.parse(localStorage.getItem('aba_chats')||'[]');active=chats[0]?.id||null;renderChats();renderMessages()}}
+function renderChats(){const q=(document.getElementById('q').value||'').toLowerCase();document.getElementById('chats').innerHTML=chats.filter(c=>(c.title||'').toLowerCase().includes(q)).map(c=>'<div class="chat '+(c.id===active?'active':'')+'" onclick="openChat(\''+c.id+'\')"><div class="t">'+esc(c.title||'Nuevo chat')+'</div><div class="m">'+esc(c.client_name||'Chat de trabajo')+'</div></div>').join('')}
+async function newChat(){const d=await api({op:'new'});chats.unshift(d.chat);active=d.chat.id;renderChats();renderMessages();document.getElementById('input').focus()}
+async function openChat(id){active=id;renderChats();try{const d=await api({op:'get',id});const i=chats.findIndex(c=>c.id===id);if(i>=0)chats[i]=d.chat;renderMessages()}catch(e){}}
+function renderMessages(){const c=chats.find(x=>x.id===active);const el=document.getElementById('messages');if(!c||!(c.messages||[]).length){el.innerHTML='<div class="welcome"><h2>Nuevo trabajo</h2><p>Cuéntame qué empresa, proyecto o problema quieres analizar.</p></div>';document.getElementById('title').textContent='AI BUSINESS ARCHITECT CORE';return}document.getElementById('title').textContent=c.title||'AI BUSINESS ARCHITECT';el.innerHTML=c.messages.map(m=>'<div class="msg '+m.role+'"><div class="avatar">'+(m.role==='user'?'T':'ABA')+'</div><div class="bubble">'+esc(m.content)+'</div></div>').join('');el.scrollTop=el.scrollHeight}
+async function send(){const ta=document.getElementById('input');const text=ta.value.trim();if(!text||busy)return;if(!active)await newChat();const c=chats.find(x=>x.id===active);c.messages.push({role:'user',content:text});ta.value='';busy=true;document.getElementById('send').disabled=true;renderMessages();try{const d=await api({op:'chat',id:active,message:text});const i=chats.findIndex(x=>x.id===active);chats[i]=d.chat;renderChats();renderMessages()}catch(e){c.messages.push({role:'assistant',content:'No pude procesar este turno: '+e.message});renderMessages()}finally{busy=false;document.getElementById('send').disabled=false;ta.focus()}}
+function key(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send()}}
+function esc(s){return String(s??'').replace(/[&<>"]/g,x=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[x]))}
+init();
+</script></body></html>
