@@ -196,9 +196,9 @@ async function callAgent(action, phone, extra={}){
   return data;
 }
 
-async function askAI(message, phone){
+async function askAI(message, phone, newConversation=false){
   try{
-    const data=await callAgent("chat",phone,{message});
+    const data=await callAgent("chat",phone,{message,...(newConversation?{new_conversation:true}: {})});
 
     // Persistir explícitamente la propuesta/autorización devuelta por ci-agent.
     // Esto evita perder el vínculo entre la conversación actual y el envío automático.
@@ -330,7 +330,7 @@ app.post("/webhook",async(req,res)=>{
 
           try{
             addMessage(phone,"user",text);
-            const reply=await askAI(text,phone);
+            const reply=await askAI(text,phone,isFreshConversationRequest(text));
             addMessage(phone,"assistant",reply);
             await sendWhatsAppText(phone,reply);
 
@@ -338,6 +338,19 @@ app.post("/webhook",async(req,res)=>{
             if(emailResult?.sent===true){
               await sendWhatsAppText(phone,"Listo ✅ Tu propuesta y roadmap fueron enviados al correo que nos proporcionaste.");
               console.log(new Date().toISOString(),"Propuesta enviada por email a ...",String(phone).slice(-4));
+            } else {
+              // Watchdog de demostración: envío inmediato + reintentos a 60s y 120s como máximo.
+              [60000,120000].forEach((delay)=>setTimeout(async()=>{
+                try{
+                  const result=await maybeApproveAndSend(phone);
+                  if(result?.sent===true){
+                    await sendWhatsAppText(phone,"Listo ✅ Tu propuesta y roadmap fueron enviados al correo que nos proporcionaste.");
+                    console.log(new Date().toISOString(),"Propuesta enviada por email mediante reintento a ...",String(phone).slice(-4));
+                  }
+                }catch(error){
+                  console.error(new Date().toISOString(),"Error watchdog email:",error?.message||error);
+                }
+              },delay));
             }
 
             console.log(new Date().toISOString(),"Respuesta enviada a ...",String(phone).slice(-4));
