@@ -210,6 +210,23 @@ async function autoSendProposal(data){
   return {sent:true,recipient:body.recipient||null};
 }
 
+async function runPendingAutoSend(){
+  if(!AI_AGENT_URL||!AI_PUBLIC_KEY) return;
+  try{
+    const r=await fetch(AI_AGENT_URL,{
+      method:"POST",
+      signal:AbortSignal.timeout(55000),
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({action:"auto_send_pending",public_key:AI_PUBLIC_KEY})
+    });
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok) console.error(new Date().toISOString(),"Auto-send pending error:",r.status,JSON.stringify(d).slice(0,700));
+    else if(d.processed) console.log(new Date().toISOString(),"Auto-send pending:",JSON.stringify(d).slice(0,700));
+  }catch(error){
+    console.error(new Date().toISOString(),"Auto-send pending exception:",error?.message||error);
+  }
+}
+
 async function sendWhatsAppText(to,body){
   if(!ACCESS_TOKEN||!PHONE_NUMBER_ID) throw new Error("WhatsApp credentials are not configured");
   const url=`https://graph.facebook.com/v23.0/${PHONE_NUMBER_ID}/messages`;
@@ -295,4 +312,4 @@ app.get("/api/conversations",(req,res)=>{
   })));
 });
 
-app.listen(PORT,()=>console.log(`AI Cliente Inteligente listening on :${PORT}`));
+app.listen(PORT,()=>{ console.log(`AI Cliente Inteligente listening on :${PORT}`); setTimeout(runPendingAutoSend,5000); setInterval(runPendingAutoSend,60000); });
