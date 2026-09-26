@@ -134,11 +134,11 @@ async function callAgent(action, phone, extra={}){
   try{ data=raw?JSON.parse(raw):{}; }catch{}
 
   if(!response.ok){
-    console.error(new Date().toISOString(),\`AI \${action} \${response.status}:\`,raw.slice(0,1000));
+    console.error(new Date().toISOString(),`AI ${action} ${response.status}:`,raw.slice(0,1000));
     if(response.status===404 && raw.includes("CONVERSATION_NOT_FOUND")){
       updateSession(phone,{conversation_id:null});
     }
-    throw new Error(\`AI \${action} \${response.status}\`);
+    throw new Error(`AI ${action} ${response.status}`);
   }
 
   updateSession(phone,{
