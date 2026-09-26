@@ -199,6 +199,23 @@ async function callAgent(action, phone, extra={}){
 async function askAI(message, phone){
   try{
     const data=await callAgent("chat",phone,{message});
+
+    // Persistir explícitamente la propuesta/autorización devuelta por ci-agent.
+    // Esto evita perder el vínculo entre la conversación actual y el envío automático.
+    if(data?.proposal?.id){
+      const current=getSession(phone);
+      updateSession(phone,{
+        state:{
+          ...current.state,
+          proposal_id:data.proposal.id,
+          proposal_ready:true,
+          ...(data.proposal.auto_send_token
+            ? {auto_send_token:data.proposal.auto_send_token}
+            : {})
+        }
+      });
+    }
+
     return data.reply || "Gracias por escribirnos 🙌. No recibí una respuesta válida del agente.";
   }catch(error){
     console.error(new Date().toISOString(),"Error chat:",error?.message||error);
