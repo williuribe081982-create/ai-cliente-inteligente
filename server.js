@@ -88,7 +88,7 @@ app.get(["/privacidad","/privacy"],(_req,res)=>{
 <h2>1. Qué datos tratamos</h2>
 <p>Cuando nos escribes por WhatsApp tratamos tu número de teléfono, el contenido de tus mensajes y los datos que decidas compartir (por ejemplo nombre, empresa o correo electrónico).</p>
 <h2>2. Para qué los usamos</h2>
-<p>Para responder tus consultas, entender tu necesidad, preparar recomendaciones, roadmaps y cotizaciones, y dar seguimiento comercial. Las cotizaciones son revisadas por una persona antes de enviarse.</p>
+<p>Para responder tus consultas, entender tu necesidad, preparar recomendaciones, roadmaps y cotizaciones, y dar seguimiento comercial. Cuando se cumplen las reglas comerciales autorizadas y confirmas que deseas avanzar, el sistema puede preparar y enviar automáticamente la propuesta y el roadmap por correo.</p>
 <h2>3. Con quién los compartimos</h2>
 <p>Solo con los proveedores tecnológicos necesarios para prestar el servicio: Meta (WhatsApp Business Platform), nuestro proveedor de alojamiento, nuestra base de datos y el proveedor del modelo de inteligencia artificial que procesa los mensajes. No vendemos tus datos.</p>
 <h2>4. Conservación</h2>
