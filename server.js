@@ -81,6 +81,25 @@ function verifyMetaSignature(req){
   return a.length===b.length && crypto.timingSafeEqual(a,b);
 }
 
+app.get("/p/:token",async(req,res)=>{
+  try{
+    if(!AI_AGENT_URL) return res.sendStatus(503);
+    const response=await fetch(AI_AGENT_URL,{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({action:"view",token:req.params.token})
+    });
+    const raw=await response.text();
+    if(!response.ok) return res.status(response.status).send(raw);
+    const data=JSON.parse(raw);
+    if(!data?.html) return res.sendStatus(404);
+    res.type("html").send(data.html);
+  }catch(error){
+    console.error(new Date().toISOString(),"Error vista propuesta:",error?.message||error);
+    res.sendStatus(500);
+  }
+});
+
 app.get("/health",(_req,res)=>res.json({
   ok:true,
   product:"AI Cliente Inteligente",
