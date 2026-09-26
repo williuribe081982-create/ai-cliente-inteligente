@@ -4,401 +4,315 @@ const fs = require("fs");
 const path = require("path");
 
 const app = express();
-// Captura el cuerpo crudo para validar X-Hub-Signature-256 (debe ir antes de cualquier otro parser).
-app.use(express.json({
-  limit:"1mb",
-  verify:(req,_res,buf)=>{ req.rawBody=Buffer.from(buf); }
-}));
-
 const PORT = process.env.PORT || 3000;
+
 const VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || "";
 const ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || "";
 const PHONE_NUMBER_ID = process.env.META_PHONE_NUMBER_ID || "";
 const META_APP_SECRET = process.env.META_APP_SECRET || "";
-const AI_AGENT_URL = "https://zvxjjeqztrrhgpeovqsg.supabase.co/functions/v1/ci-agent-v2";
+
+const AI_AGENT_URL = process.env.AI_AGENT_URL || "";
 const AI_PUBLIC_KEY = process.env.AI_PUBLIC_KEY || "";
 const WORKSPACE_ID = process.env.WORKSPACE_ID || "";
+
+const AUTO_EMAIL_SERVICE = "Estrategia con IA";
+const AUTO_EMAIL_AMOUNT = 2000000;
+
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const DATA_FILE = path.join(DATA_DIR, "conversations.json");
-
-fs.mkdirSync(DATA_DIR, {recursive:true});
+fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(DATA_FILE)) fs.writeFileSync(DATA_FILE, "{}", "utf8");
 
-const store = () => {
-  try { return JSON.parse(fs.readFileSync(DATA_FILE,"utf8")); }
+function store() {
+  try { return JSON.parse(fs.readFileSync(DATA_FILE, "utf8")); }
   catch { return {}; }
-};
-const save = x => fs.writeFileSync(DATA_FILE, JSON.stringify(x,null,2), "utf8");
-
-function isFreshConversationRequest(message){
-  return /\b(hola|buenos? d[ií]as|buenas?(?: tardes| noches)?)\b/i.test(message)
-    && /\b(servicios?|informaci[oó]n)\b/i.test(message);
 }
-function resetSession(phone){
-  const all=store();
-  all[phone]={phone,lead:{},state:{},conversation_id:null,messages:[]};
-  save(all);
-  return all[phone];
+function save(data) {
+  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2), "utf8");
 }
-function getSession(phone){
-  const all=store();
+function getSession(phone) {
+  const all = store();
   all[phone] ||= {
     phone,
-    lead:{},
-    state:{},
-    conversation_id:null,
-    messages:[]
+    lead: { phone },
+    state: {},
+    conversation_id: null,
+    messages: [],
+    processed_message_ids: []
   };
   save(all);
   return all[phone];
 }
-
-function updateSession(phone, patch){
-  const all=store();
-  all[phone] ||= {phone,lead:{},state:{},conversation_id:null,messages:[]};
-  all[phone]={...all[phone],...patch};
+function updateSession(phone, patch) {
+  const all = store();
+  all[phone] ||= { phone, lead: { phone }, state: {}, conversation_id: null, messages: [], processed_message_ids: [] };
+  all[phone] = { ...all[phone], ...patch };
   save(all);
   return all[phone];
 }
-
-function addMessage(phone, role, content){
-  const all=store();
-  all[phone] ||= {phone,lead:{},state:{},conversation_id:null,messages:[]};
-  all[phone].messages.push({role,content,at:new Date().toISOString()});
-  all[phone].messages=all[phone].messages.slice(-40);
+function addMessage(phone, role, content) {
+  const all = store();
+  all[phone] ||= { phone, lead: { phone }, state: {}, conversation_id: null, messages: [], processed_message_ids: [] };
+  all[phone].messages.push({ role, content, at: new Date().toISOString() });
+  all[phone].messages = all[phone].messages.slice(-40);
   save(all);
 }
-
-function verifyMetaSignature(req){
-  if(!META_APP_SECRET) return true;
-  const signature=req.get("x-hub-signature-256");
-  if(!signature||!req.rawBody) return false;
-  const expected="sha256="+crypto
-    .createHmac("sha256",META_APP_SECRET)
-    .update(req.rawBody)
-    .digest("hex");
-  const a=Buffer.from(signature), b=Buffer.from(expected);
-  return a.length===b.length && crypto.timingSafeEqual(a,b);
+function markProcessed(phone, id) {
+  const s = getSession(phone);
+  const ids = new Set(s.processed_message_ids || []);
+  ids.add(id);
+  updateSession(phone, { processed_message_ids: Array.from(ids).slice(-100) });
+}
+function wasProcessed(phone, id) {
+  return (getSession(phone).processed_message_ids || []).includes(id);
 }
 
-app.get("/p/:token",async(req,res)=>{
-  try{
-    if(!AI_AGENT_URL) return res.sendStatus(503);
-    const response=await fetch(AI_AGENT_URL,{
-      method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({action:"view",token:req.params.token})
-    });
-    const raw=await response.text();
-    if(!response.ok) return res.status(response.status).send(raw);
-    const data=JSON.parse(raw);
-    if(!data?.html) return res.sendStatus(404);
-    res.type("html").send(data.html);
-  }catch(error){
-    console.error(new Date().toISOString(),"Error vista propuesta:",error?.message||error);
-    res.sendStatus(500);
-  }
-});
+function verifyMetaSignature(req) {
+  if (!META_APP_SECRET) return true;
+  const signature = req.get("x-hub-signature-256");
+  if (!signature || !req.rawBody) return false;
+  const expected = "sha256=" + crypto
+    .createHmac("sha256", META_APP_SECRET)
+    .update(req.rawBody)
+    .digest("hex");
+  const a = Buffer.from(signature);
+  const b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
 
-
-// AI BUSINESS ARCHITECT — workspace interno de chats
-app.get("/architect",(_req,res)=>{
-  try { res.type("html").send(fs.readFileSync(path.join(__dirname,"architect.html"),"utf8")); }
-  catch(e){ console.error("architect.html",e); res.sendStatus(500); }
-});
-app.post("/architect-api",async(req,res)=>{
-  try{
-    if(!AI_AGENT_URL || !AI_PUBLIC_KEY) return res.status(503).json({ok:false,error:"AI Business Architect no configurado"});
-    const b=req.body||{};
-    const payload={action:"architect",public_key:AI_PUBLIC_KEY,workspace_id:WORKSPACE_ID||undefined,...b};
-    const response=await fetch(AI_AGENT_URL,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload),signal:AbortSignal.timeout(60000)});
-    const raw=await response.text();
-    res.status(response.status).type("json").send(raw);
-  }catch(e){ console.error(new Date().toISOString(),"Architect API:",e?.message||e); res.status(500).json({ok:false,error:"Error del agente"}); }
-});
-
-app.get("/health",(_req,res)=>res.json({
-  ok:true,
-  product:"AI Cliente Inteligente",
-  whatsapp:!!(ACCESS_TOKEN&&PHONE_NUMBER_ID),
-  ai:!!AI_AGENT_URL,
-  workspace:!!WORKSPACE_ID
+app.use(express.json({
+  limit: "1mb",
+  verify: (req, _res, buf) => { req.rawBody = Buffer.from(buf); }
 }));
 
-// Política de privacidad pública (requerida por Meta para publicar la app).
-app.get(["/privacidad","/privacy"],(_req,res)=>{
-  res.type("html").send(`<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Política de privacidad — AI Cliente Inteligente</title>
-<style>body{font-family:system-ui,Arial,sans-serif;max-width:760px;margin:0 auto;padding:24px 16px;line-height:1.6;color:#1d1d1f}h1{font-size:1.6rem}h2{font-size:1.15rem;margin-top:1.6em}</style></head><body>
-<h1>Política de privacidad — AI Cliente Inteligente</h1>
-<p><b>Responsable:</b> William Hernández Uribe — AI Business Architect. Medellín, Colombia. Contacto: <a href="mailto:arqwilliamhernandez@gmail.com">arqwilliamhernandez@gmail.com</a>.</p>
-<h2>1. Qué datos tratamos</h2>
-<p>Cuando nos escribes por WhatsApp tratamos tu número de teléfono, el contenido de tus mensajes y los datos que decidas compartir (por ejemplo nombre, empresa o correo electrónico).</p>
-<h2>2. Para qué los usamos</h2>
-<p>Para responder tus consultas, entender tu necesidad, preparar recomendaciones, roadmaps y cotizaciones, y dar seguimiento comercial. Cuando se cumplen las reglas comerciales autorizadas y confirmas que deseas avanzar, el sistema puede preparar y enviar automáticamente la propuesta y el roadmap por correo.</p>
-<h2>3. Con quién los compartimos</h2>
-<p>Solo con los proveedores tecnológicos necesarios para prestar el servicio: Meta (WhatsApp Business Platform), nuestro proveedor de alojamiento, nuestra base de datos y el proveedor del modelo de inteligencia artificial que procesa los mensajes. No vendemos tus datos.</p>
-<h2>4. Conservación</h2>
-<p>Conservamos la información mientras exista una relación comercial o hasta que solicites su eliminación.</p>
-<h2>5. Tus derechos</h2>
-<p>Puedes conocer, actualizar, rectificar o solicitar la eliminación de tus datos, y revocar tu autorización, conforme a la Ley 1581 de 2012 de Colombia, escribiendo a <a href="mailto:arqwilliamhernandez@gmail.com">arqwilliamhernandez@gmail.com</a>. Atenderemos tu solicitud en los plazos legales.</p>
-<h2>6. Eliminación de datos</h2>
-<p>Para eliminar tus datos envía un correo a la dirección anterior con el asunto "Eliminar mis datos" indicando tu número de WhatsApp.</p>
-<p style="color:#666;font-size:.9rem">Última actualización: 25 de septiembre de 2026.</p>
-</body></html>`);
+app.get("/health", (_req, res) => {
+  res.json({
+    ok: true,
+    product: "AI Cliente Inteligente",
+    whatsapp: !!(ACCESS_TOKEN && PHONE_NUMBER_ID),
+    ai: !!(AI_AGENT_URL && AI_PUBLIC_KEY && WORKSPACE_ID),
+    workspace: !!WORKSPACE_ID,
+    automatic_email: !!AI_AGENT_URL,
+    automatic_service: AUTO_EMAIL_SERVICE,
+    automatic_amount_cop: AUTO_EMAIL_AMOUNT
+  });
 });
 
-app.get("/webhook",(req,res)=>{
-  const mode=req.query["hub.mode"];
-  const token=req.query["hub.verify_token"];
-  const challenge=req.query["hub.challenge"];
-  if(mode==="subscribe" && token===VERIFY_TOKEN) return res.status(200).send(challenge);
+app.get("/webhook", (req, res) => {
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+  if (mode === "subscribe" && token === VERIFY_TOKEN) return res.status(200).send(challenge);
   return res.sendStatus(403);
 });
 
-async function callAgent(action, phone, extra={}){
-  const s=getSession(phone);
-  if(!AI_AGENT_URL) throw new Error("AI_AGENT_URL no configurada");
+async function callAI(payload) {
+  if (!AI_AGENT_URL) throw new Error("AI_AGENT_URL is not configured");
+  const response = await fetch(AI_AGENT_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  const raw = await response.text();
+  let data = {};
+  try { data = JSON.parse(raw); } catch {}
+  if (!response.ok) throw new Error(`AI ${response.status}: ${raw.slice(0, 1000)}`);
+  return data;
+}
 
-  const response=await fetch(AI_AGENT_URL,{
-    method:"POST",
-    signal:AbortSignal.timeout(55000),
-    headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({
-      action,
-      public_key:AI_PUBLIC_KEY,
-      workspace_id:WORKSPACE_ID || undefined,
-      conversation_id:s.conversation_id || null,
-      lead:{phone,...s.lead},
-      state:s.state,
-      history:s.messages.slice(-16),
-      ...extra
-    })
+async function askAI(message, phone) {
+  const s = getSession(phone);
+  const data = await callAI({
+    action: "chat",
+    public_key: AI_PUBLIC_KEY,
+    workspace_id: WORKSPACE_ID || undefined,
+    message,
+    conversation_id: s.conversation_id || null,
+    lead: { phone, ...s.lead },
+    state: s.state,
+    history: s.messages.slice(-16)
   });
 
-  const raw=await response.text();
-  let data={};
-  try{ data=raw?JSON.parse(raw):{}; }catch{}
-
-  if(!response.ok){
-    console.error(new Date().toISOString(),`AI ${action} ${response.status}:`,raw.slice(0,1000));
-    if(response.status===404 && raw.includes("CONVERSATION_NOT_FOUND")){
-      updateSession(phone,{conversation_id:null});
-    }
-    throw new Error(`AI ${action} ${response.status}`);
-  }
-
-  updateSession(phone,{
-    conversation_id:data.conversation_id || s.conversation_id,
-    lead:{...s.lead,...(data.lead||{})},
-    state:{...s.state,...(data.state||{}),...(data.auto_send_token?{auto_send_token:data.auto_send_token}: {})}
+  updateSession(phone, {
+    conversation_id: data.conversation_id || s.conversation_id,
+    lead: { ...s.lead, ...(data.lead || {}) },
+    state: { ...s.state, ...(data.state || {}) }
   });
 
   return data;
 }
 
-async function askAI(message, phone, newConversation=false){
-  try{
-    const data=await callAgent("chat",phone,{message,...(newConversation?{new_conversation:true}: {})});
+function extractProposal(data) {
+  return data?.proposal || data?.quote || data?.proposal_data || null;
+}
+function proposalId(proposal) {
+  return proposal?.id || proposal?.proposal_id || proposal?.proposalId || null;
+}
+function proposalServiceName(proposal) {
+  return proposal?.service?.name ||
+    proposal?.service_name ||
+    proposal?.serviceName ||
+    proposal?.services?.name ||
+    "";
+}
+function proposalAmount(proposal) {
+  const raw = proposal?.amount ?? proposal?.total ?? proposal?.total_amount ??
+    proposal?.price ?? proposal?.quote?.amount;
+  const n = Number(String(raw ?? "").replace(/[^\d.-]/g, ""));
+  return Number.isFinite(n) ? n : null;
+}
+function isAutomaticProposal(proposal) {
+  if (!proposal) return false;
+  const name = proposalServiceName(proposal).trim().toLowerCase();
+  const amount = proposalAmount(proposal);
+  return name === AUTO_EMAIL_SERVICE.toLowerCase() &&
+    (amount === null || amount === AUTO_EMAIL_AMOUNT);
+}
 
-    // Persistir explícitamente la propuesta/autorización devuelta por ci-agent.
-    // Esto evita perder el vínculo entre la conversación actual y el envío automático.
-    if(data?.proposal?.id){
-      const current=getSession(phone);
-      updateSession(phone,{
-        state:{
-          ...current.state,
-          proposal_id:data.proposal.id,
-          proposal_ready:true,
-          ...(data.proposal.auto_send_token
-            ? {auto_send_token:data.proposal.auto_send_token}
-            : {})
-        }
-      });
-    }
+async function finalizeAutomaticEmail(data, phone) {
+  const proposal = extractProposal(data);
+  if (!isAutomaticProposal(proposal)) return { sent: false, reason: "not_target_service" };
 
-    return data.reply || "Gracias por escribirnos 🙌. No recibí una respuesta válida del agente.";
-  }catch(error){
-    console.error(new Date().toISOString(),"Error chat:",error?.message||error);
-    return "Gracias por escribirnos 🙌. En este momento no puedo procesar tu mensaje automáticamente. Un asesor de nuestro equipo te responderá pronto.";
+  const pid = proposalId(proposal);
+  const lead = { ...getSession(phone).lead, ...(data.lead || {}) };
+  const email = String(lead.email || "").trim();
+
+  if (!pid) return { sent: false, reason: "proposal_id_missing" };
+
+  if (!email) {
+    return {
+      sent: false,
+      reason: "email_missing",
+      reply: "Perfecto. Ya tenemos lista la propuesta de Estrategia con IA por $2.000.000 COP. Para enviarte el roadmap y la cotización, ¿a qué correo deseas que los envíe?"
+    };
   }
-}
 
-function hasEmail(lead){
-  return typeof lead?.email==="string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(lead.email.trim());
-}
+  const approval = await callAI({
+    action: "approve",
+    public_key: AI_PUBLIC_KEY,
+    workspace_id: WORKSPACE_ID,
+    proposal_id: pid,
+    notes: "Aprobación automática por cierre de conversación WhatsApp para servicio Estrategia con IA."
+  });
 
-function getProposalId(state, lead){
-  // A proposal is only eligible for automatic sending when the CURRENT
-  // conversation has explicitly reached the proposal stage. Historical
-  // proposal ids are deliberately ignored during normal chat recovery.
-  if(state?.proposal_ready === true || state?.current_proposal_ready === true){
-    return state?.proposal_id ||
-      state?.quote_id ||
-      state?.proposal?.id ||
-      lead?.proposal_id ||
-      lead?.quote_id ||
-      null;
+  if (!approval?.ok && approval?.approval_status !== "approved") {
+    return {
+      sent: false,
+      reason: "approval_failed",
+      error: approval?.message || approval?.error || "No fue posible aprobar la propuesta."
+    };
   }
-  return null;
-}
 
-async function maybeApproveAndSend(phone){
-  const session=getSession(phone);
-  const proposalId=getProposalId(session.state,session.lead);
-  const autoSendToken=session.state?.auto_send_token;
+  const sent = await callAI({
+    action: "send_email",
+    public_key: AI_PUBLIC_KEY,
+    workspace_id: WORKSPACE_ID,
+    proposal_id: pid
+  });
 
-  if(!proposalId || !hasEmail(session.lead) || !autoSendToken) return null;
-
-  try{
-    const sent=await callAgent("auto_send",phone,{
-      proposal_id:proposalId,
-      auto_send_token:autoSendToken,
-      public_key:AI_PUBLIC_KEY
-    });
-
-    const sentOk=sent?.sent===true || sent?.ok===true || sent?.already_sent===true;
-
-    updateSession(phone,{state:{
-      ...getSession(phone).state,
-      email_result:{ok:sentOk,at:new Date().toISOString(),response:sent}
-    }});
-
-    if(!sentOk){
-      console.error(new Date().toISOString(),"auto_send no confirmó éxito:",JSON.stringify(sent).slice(0,1000));
-      return null;
-    }
-
-    return {sent:true};
-  }catch(error){
-    console.error(new Date().toISOString(),"Error auto_send:",error?.message||error);
-    return null;
+  if (!sent?.ok) {
+    return {
+      sent: false,
+      reason: "email_failed",
+      error: sent?.message || sent?.error || "No fue posible enviar el correo."
+    };
   }
+
+  return {
+    sent: true,
+    recipient: sent.recipient || email,
+    provider: sent.provider || "Resend",
+    provider_message_id: sent.provider_message_id || null
+  };
 }
 
-async function sendWhatsAppText(to,body){
-  if(!ACCESS_TOKEN||!PHONE_NUMBER_ID) throw new Error("WhatsApp credentials are not configured");
-  const url=`https://graph.facebook.com/v23.0/${PHONE_NUMBER_ID}/messages`;
-  const response=await fetch(url,{
-    method:"POST",
-    headers:{
-      "Authorization":`Bearer ${ACCESS_TOKEN}`,
-      "Content-Type":"application/json"
+async function sendWhatsAppText(to, body) {
+  if (!ACCESS_TOKEN || !PHONE_NUMBER_ID) throw new Error("WhatsApp credentials are not configured");
+  const url = `https://graph.facebook.com/v23.0/${PHONE_NUMBER_ID}/messages`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${ACCESS_TOKEN}`,
+      "Content-Type": "application/json"
     },
-    body:JSON.stringify({
-      messaging_product:"whatsapp",
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
       to,
-      type:"text",
-      text:{preview_url:false,body:String(body).slice(0,4096)}
+      type: "text",
+      text: { preview_url: false, body: String(body).slice(0, 4096) }
     })
   });
-  if(!response.ok) throw new Error(`WhatsApp ${response.status}: ${await response.text()}`);
+  if (!response.ok) throw new Error(`WhatsApp ${response.status}: ${await response.text()}`);
 }
 
-// Meta puede reenviar el mismo evento; se procesa cada message.id una sola vez.
-const seen=new Set();
-function firstTime(id){
-  if(!id) return true;
-  if(seen.has(id)) return false;
-  seen.add(id);
-  if(seen.size>2000) seen.delete(seen.values().next().value);
-  return true;
-}
-
-app.post("/webhook",async(req,res)=>{
-  if(!verifyMetaSignature(req)){
-    console.error(new Date().toISOString(),"Webhook rechazado: firma X-Hub-Signature-256 inválida (revisar META_APP_SECRET)", req.get("x-hub-signature-256")?"con firma":"sin firma");
-    return res.sendStatus(401);
-  }
-  const n=(req.body.entry||[]).reduce((k,e)=>k+(e.changes||[]).reduce((m,c)=>m+(c.value?.messages||[]).length,0),0);
-  console.log(new Date().toISOString(),`Webhook recibido: ${n} mensaje(s)`);
-  // Acknowledge Meta immediately.
+app.post("/webhook", async (req, res) => {
+  if (!verifyMetaSignature(req)) return res.sendStatus(401);
   res.sendStatus(200);
 
-  try{
-    for(const entry of (req.body.entry||[])){
-      for(const change of (entry.changes||[])){
-        for(const message of (change.value?.messages||[])){
-          if(message.type!=="text") continue;
-          if(!firstTime(message.id)) continue;
-          const phone=message.from;
-          const text=message.text?.body?.trim();
-          if(!phone||!text) continue;
+  try {
+    for (const entry of (req.body.entry || [])) {
+      for (const change of (entry.changes || [])) {
+        for (const message of (change.value?.messages || [])) {
+          if (message.type !== "text") continue;
 
-          // Una nueva solicitud de servicios inicia una sesión comercial limpia.
-          // No reutilizar nombre, email, propuesta, sector ni estado de una conversación anterior.
-          if(isFreshConversationRequest(text)) resetSession(phone);
+          const phone = message.from;
+          const text = message.text?.body?.trim();
+          const messageId = message.id;
+          if (!phone || !text) continue;
+          if (messageId && wasProcessed(phone, messageId)) continue;
+          if (messageId) markProcessed(phone, messageId);
 
-          try{
-            addMessage(phone,"user",text);
-            const reply=await askAI(text,phone,isFreshConversationRequest(text));
-            addMessage(phone,"assistant",reply);
-            await sendWhatsAppText(phone,reply);
+          addMessage(phone, "user", text);
 
-            const emailResult=await maybeApproveAndSend(phone);
-            if(emailResult?.sent===true){
-              await sendWhatsAppText(phone,"Listo ✅ Tu propuesta y roadmap fueron enviados al correo que nos proporcionaste.");
-              console.log(new Date().toISOString(),"Propuesta enviada por email a ...",String(phone).slice(-4));
-            } else {
-              // Watchdog de demostración: envío inmediato + reintentos a 60s y 120s como máximo.
-              [60000,120000].forEach((delay)=>setTimeout(async()=>{
-                try{
-                  const result=await maybeApproveAndSend(phone);
-                  if(result?.sent===true){
-                    await sendWhatsAppText(phone,"Listo ✅ Tu propuesta y roadmap fueron enviados al correo que nos proporcionaste.");
-                    console.log(new Date().toISOString(),"Propuesta enviada por email mediante reintento a ...",String(phone).slice(-4));
-                  }
-                }catch(error){
-                  console.error(new Date().toISOString(),"Error watchdog email:",error?.message||error);
-                }
-              },delay));
-            }
-
-            console.log(new Date().toISOString(),"Respuesta enviada a ...",String(phone).slice(-4));
-          }catch(error){
-            console.error(new Date().toISOString(),"Error procesando mensaje:",error?.message||error);
+          let data;
+          try {
+            data = await askAI(text, phone);
+          } catch (aiError) {
+            console.error(new Date().toISOString(), aiError);
+            const fallback = "Estoy teniendo un inconveniente temporal para procesar la solicitud. Por favor intenta nuevamente en unos minutos.";
+            addMessage(phone, "assistant", fallback);
+            await sendWhatsAppText(phone, fallback);
+            continue;
           }
+
+          let reply = data.reply || "";
+          let auto;
+          try {
+            auto = await finalizeAutomaticEmail(data, phone);
+          } catch (emailError) {
+            auto = { sent: false, reason: "email_failed", error: emailError.message };
+          }
+
+          if (auto.reason === "email_missing") {
+            reply = auto.reply;
+          } else if (auto.sent) {
+            reply = "Perfecto. Ya concretamos la propuesta de Estrategia con IA por $2.000.000 COP. Te acabo de enviar al correo el roadmap y la cotización.";
+          } else if (auto.reason === "approval_failed" || auto.reason === "email_failed") {
+            reply = `${reply}
+
+La propuesta quedó preparada, pero no pude completar el envío del correo todavía. No voy a marcarla como enviada hasta confirmar la entrega.`;
+            console.error("Automatic proposal/email error:", auto);
+          }
+
+          if (!reply) reply = "Perfecto. He actualizado tu solicitud.";
+          addMessage(phone, "assistant", reply);
+          await sendWhatsAppText(phone, reply);
         }
       }
     }
-  }catch(error){
-    console.error(new Date().toISOString(),error);
+  } catch (error) {
+    console.error(new Date().toISOString(), error);
   }
 });
 
-// Contiene teléfonos y mensajes: solo disponible si ADMIN_TOKEN está configurado y se envía como Bearer.
-app.get("/api/conversations",(req,res)=>{
-  const adminToken=process.env.ADMIN_TOKEN||"";
-  if(!adminToken || req.get("authorization")!==`Bearer ${adminToken}`) return res.sendStatus(404);
-  res.json(Object.values(store()).map(x=>({
-    phone:x.phone,
-    lead:x.lead,
-    state:x.state,
-    conversation_id:x.conversation_id,
-    messages:x.messages.slice(-20)
+app.get("/api/conversations", (_req, res) => {
+  res.json(Object.values(store()).map(x => ({
+    phone: x.phone,
+    lead: x.lead,
+    state: x.state,
+    conversation_id: x.conversation_id,
+    messages: x.messages.slice(-20)
   })));
 });
 
-async function recoverPendingEmails(){
-  try{
-    const all=store();
-    for(const [phone,session] of Object.entries(all)){
-      if(!session?.state?.proposal_id || !session?.state?.auto_send_token || !hasEmail(session?.lead)) continue;
-      if(session?.state?.email_result?.ok===true) continue;
-      const result=await maybeApproveAndSend(phone);
-      if(result?.sent===true){
-        try{
-          await sendWhatsAppText(phone,"Listo ✅ Tu propuesta y roadmap fueron enviados al correo que nos proporcionaste.");
-        }catch(error){
-          console.error(new Date().toISOString(),"Email enviado pero no se pudo confirmar por WhatsApp:",error?.message||error);
-        }
-      }
-    }
-  }catch(error){
-    console.error(new Date().toISOString(),"Error recuperando envíos pendientes:",error?.message||error);
-  }
-}
-
-app.listen(PORT,async()=>{
-  console.log(`AI Cliente Inteligente listening on :${PORT}`);
-  await recoverPendingEmails();
-});
+app.listen(PORT, () => console.log(`AI Cliente Inteligente listening on :${PORT}`));
