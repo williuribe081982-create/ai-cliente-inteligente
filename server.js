@@ -30,7 +30,7 @@ const store = () => {
 };
 const save = x => fs.writeFileSync(DATA_FILE, JSON.stringify(x,null,2), "utf8");
 
-function getSession(phone){
+function isFreshConversationRequest(message){return /\b(hola|buenos? d[ií]as|buenas?(?: tardes| noches)?)\b/i.test(message)&&(/(conocer|ver|saber|informaci[oó]n).*\bservicios?\b|\bservicios?\b.*(conocer|ver|saber|informaci[oó]n)/i.test(message));}\nfunction resetSession(phone){const all=store();all[phone]={phone,lead:{},state:{},conversation_id:null,messages:[]};save(all);return all[phone];}\nfunction getSession(phone){
   const all=store();
   all[phone] ||= {
     phone,
