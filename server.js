@@ -131,7 +131,7 @@ app.post("/architect-api",async(req,res)=>{
 
 app.get("/health",(_req,res)=>res.json({
   ok:true,
-  product:"AI Cliente Inteligente",
+  product:"SIERRA — Asistente Comercial Inteligente",
   whatsapp:!!(ACCESS_TOKEN&&PHONE_NUMBER_ID),
   ai:!!AI_AGENT_URL,
   workspace:!!WORKSPACE_ID
@@ -206,6 +206,20 @@ async function callAgent(action, phone, extra={}){
   });
 
   return data;
+}
+
+// Transcribe una nota de voz de WhatsApp vía ci-agent (action "transcribe"). Devuelve "" si no se pudo.
+async function transcribeVoice(mediaId){
+  if(!mediaId || !AI_AGENT_URL || !AI_PUBLIC_KEY) return "";
+  try{
+    const r=await fetch(AI_AGENT_URL,{method:"POST",signal:AbortSignal.timeout(50000),headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"transcribe",public_key:AI_PUBLIC_KEY,media_id:mediaId})});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){ console.error(new Date().toISOString(),"Transcripción",r.status,JSON.stringify(d).slice(0,300)); return ""; }
+    return String(d.text||"").trim();
+  }catch(e){
+    console.error(new Date().toISOString(),"Transcripción:",e?.message||e);
+    return "";
+  }
 }
 
 async function askAI(message, phone, newConversation=false){
@@ -331,11 +345,25 @@ app.post("/webhook",async(req,res)=>{
     for(const entry of (req.body.entry||[])){
       for(const change of (entry.changes||[])){
         for(const message of (change.value?.messages||[])){
-          if(message.type!=="text") continue;
           if(!firstTime(message.id)) continue;
           const phone=message.from;
-          const text=message.text?.body?.trim();
-          if(!phone||!text) continue;
+          if(!phone) continue;
+          let text="";
+          if(message.type==="text"){
+            text=message.text?.body?.trim()||"";
+          }else if(message.type==="audio"){
+            // Nota de voz: se transcribe en ci-agent (Gemini) y se procesa como texto.
+            text=await transcribeVoice(message.audio?.id);
+            if(!text){
+              try{ await sendWhatsAppText(phone,"Recibí tu nota de voz 🎧, pero no logré escucharla bien. ¿Me la puedes enviar de nuevo o escribirme tu mensaje, por favor?"); }catch(e){ console.error(new Date().toISOString(),"Aviso audio:",e?.message||e); }
+              continue;
+            }
+            console.log(new Date().toISOString(),"Nota de voz transcrita de ...",String(phone).slice(-4));
+          }else if(["image","video","document","location","contacts"].includes(message.type)){
+            try{ await sendWhatsAppText(phone,"Gracias por tu mensaje 🙏. Por ahora puedo leer mensajes de texto y notas de voz. ¿Me cuentas por escrito o en un audio en qué te puedo ayudar?"); }catch(e){ console.error(new Date().toISOString(),"Aviso multimedia:",e?.message||e); }
+            continue;
+          }
+          if(!text) continue; // reacciones, stickers y otros eventos se ignoran
 
           // Una nueva solicitud de servicios inicia una sesión comercial limpia.
           // No reutilizar nombre, email, propuesta, sector ni estado de una conversación anterior.
