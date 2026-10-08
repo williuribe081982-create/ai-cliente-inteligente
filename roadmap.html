@@ -413,11 +413,24 @@ function render(){
  $("steps").style.setProperty("--n",N);
  $("steps").insertAdjacentHTML("beforeend",P.map((p,i)=>`<button class="st" data-i="${i}"><i>${String(i+1).padStart(2,"0")}</i><b>${esc(p.name)}</b><small>${esc(p.when||"")}</small></button>`).join(""));
  $("steps").querySelectorAll(".st").forEach(b=>b.onclick=()=>{stopTour();setPhase(+b.dataset.i)});
- const I=D.investment;$("inv").style.setProperty("--k",I.items.length);
- $("inv").innerHTML=`<div class="row" style="--k:${I.items.length}">${I.items.map(x=>`<div class="iv"><small>${esc(x.l)}</small><b>${esc(x.v)}</b><span>${esc(x.d||"")}</span></div>`).join("")}</div><div class="cond">${I.conditions.map(c=>`<span>${esc(c)}</span>`).join("")}</div>${I.note?`<p class="note">${esc(I.note)}</p>`:""}`;
+ renderInv();
  $("ctaP").textContent=D.cta;$("book").href=bookUrl;
  $("viz").innerHTML="<i></i>".repeat(22);
  setPhase(0);
+}
+function renderInv(){
+ const I=D.investment;$("inv").style.setProperty("--k",I.items.length);
+ $("inv").innerHTML=`<div class="row" style="--k:${I.items.length}">${I.items.map(x=>`<div class="iv"><small>${esc(x.l)}</small><b>${esc(x.v)}</b><span>${esc(x.d||"")}</span></div>`).join("")}</div><div class="cond">${I.conditions.map(c=>`<span>${esc(c)}</span>`).join("")}</div>${I.note?`<p class="note">${esc(I.note)}</p>`:""}`;
+}
+/* Completa "qué incluye" y condiciones desde SIERRA (ci-roadmap-extra) cuando no vienen en los datos */
+function enrich(){
+ const m=String(D.booking_url||"").match(/^(https:\/\/[^?]+\/functions\/v1\/)ci-agent\?go=([0-9a-f-]{36})/i);
+ if(!m||((D.facts||[]).length&&D.investment.conditions.length))return;
+ fetch(m[1]+"ci-roadmap-extra?t="+m[2]).then(r=>r.json()).then(x=>{
+  if(!x||!x.ok)return;
+  if(!(D.facts||[]).length&&(x.includes||[]).length){D.facts=x.includes.slice(0,4).map(t=>({b:"✓",t}));$("facts").innerHTML=D.facts.map(f=>`<span><b>${esc(f.b)}</b> ${esc(f.t)}</span>`).join("")}
+  if(!D.investment.conditions.length&&(x.conditions||[]).length){D.investment.conditions=x.conditions;renderInv()}
+ }).catch(()=>{});
 }
 function setPhase(i){
  cur=i;const p=P[i];
@@ -526,7 +539,7 @@ $("dockPlay").onclick=()=>run("full");$("dockStop").onclick=stopTour;
 /* barra flotante: aparece cuando ARIA sale de la pantalla */
 new IntersectionObserver(([e])=>$("dock").classList.toggle("show",!e.isIntersecting),{threshold:.2}).observe($("aria"));
 
-render();
+render();enrich();
 show(`Hola, soy ARIA. Toca “Guíame por el roadmap” y te explico, con mi voz, cómo funciona tu propuesta de ${svc}.`);
 setState("idle");
 </script>
