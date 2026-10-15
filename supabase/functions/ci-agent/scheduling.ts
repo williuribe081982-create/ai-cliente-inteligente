@@ -830,7 +830,7 @@ async function advisorPropose(wsRow: any, c: SchedCfg, ap: any, start: Date): Pr
   await D.admin.from("appointments").update({ status: "proposed", starts_at: start.toISOString(), ends_at: end.toISOString(), updated_at: new Date().toISOString() }).eq("id", ap.id);
   await saveSched(ctx.proposal.conversation_id, { step: "proposed", appointment_id: ap.id, offered_at: new Date().toISOString(), proposal_id: ctx.proposal.id });
   await sendClient(wsRow, c, ctx.lead.phone, `El asesor te propone reunirse el *${fmtFull(start, c.timezone)}* (hora Colombia). ¿Te sirve? Responde *SÍ* para confirmarla o dime otra opción.`, ctx.proposal.conversation_id, { kind: "advisor_proposal" });
-  return `✅ Le propuse al cliente el ${fmtFull(start, c.timezone)}. Te aviso cuando confirme.`;
+  return `✅ Le propuse al cliente el ${fmtFull(start, c.timezone)}; te aviso cuando confirme.`;
 }
 /** Enlaces del correo del asesor (Acepto / No puedo). Devuelve a dónde redirigir. */
 export async function handleAdvisorLink(token: string, action: string): Promise<string> {
