@@ -659,6 +659,7 @@ export async function handleTurn(wsRow: any, phone: string, message: string): Pr
       || await reply(`${why} Ya le avisé al asesor para que te contacte y acuerden la hora.`, { step: "idle" }, { error: r.error || r.reason });
   };
 
+  let rescheduled = false;
   try {
     // ---- cita existente: cambiar / cancelar
     if (appt && appt.status === "confirmed" && (cancel || resch || (kw && !active))) {
@@ -674,12 +675,8 @@ export async function handleTurn(wsRow: any, phone: string, message: string): Pr
       await D.audit(ws, "appointment_cancelled", "appointment", appt.id, { by: "client", reschedule: resch && !cancel });
       if (!c.dry_run) bg(D.mailAdvisor(wsRow, `❌ ${ctx.lead?.name || "Cliente"} ${resch && !cancel ? "reprogramó" : "canceló"} su reunión del ${fmtFull(new Date(appt.starts_at), tz)} (${D.quoteCode(ctx.proposal.id)})`, `<p>${D.escH(ctx.lead?.name || "El cliente")} ${resch && !cancel ? "pidió cambiar" : "canceló"} la reunión del <b>${D.escH(fmtFull(new Date(appt.starts_at), tz))}</b>. El evento se retiró del calendario.</p>`));
       if (cancel && !resch) return await reply(`Listo, cancelé tu reunión del ${fmtFull(new Date(appt.starts_at), tz)} 👍\nCuando quieras agendar otra, escríbeme *agendar*.`, { step: "idle" });
-      const pref = parsePref(message, c);
-      const opts = pref ? await prefOptions(wsRow, c, pref) : await defaultOffer(wsRow, c);
-      return (await offer(opts.slice(0, c.slots_to_offer), `Listo, liberé tu horario anterior. Estos son los espacios disponibles (${meetingDetails(c)}):`, 1))
-        || await reply(`Listo, liberé tu horario anterior. En este momento no veo espacios disponibles; ya le avisé al asesor para que te contacte.`, { step: "idle" });
+      rescheduled = true; // sigue abajo: preferencia del cliente o nueva oferta
     }
-
     // ---- el asesor propuso un horario: el cliente acepta o pide otro
     if (sched.step === "proposed" && sched.appointment_id) {
       if (isYes(message)) {
@@ -733,15 +730,17 @@ export async function handleTurn(wsRow: any, phone: string, message: string): Pr
       const opts = await prefOptions(wsRow, c, pref);
       if (opts.length) {
         const exactHit = matchPref(c, opts, pref).length > 0;
-        const intro = exactHit ? `Claro. Estos son los espacios que tengo:` : `En ese horario no tengo espacio. Lo más cercano es:`;
+        const intro = (rescheduled ? "Listo, liberé tu horario anterior. " : "") + (exactHit ? `Estos son los espacios que tengo:` : `En ese horario no tengo espacio. Lo más cercano es:`);
         return (await offer(opts, intro, (sched.round || 1) + 1))!;
       }
       return await reply(`No encuentro espacios en las próximas dos semanas con esa preferencia. Si quieres, se lo consulto directamente al asesor: dime el día y la hora que te sirven.`, { step: "offered", options: [], offered_at: new Date().toISOString() });
     }
 
-    // ---- pidió agendar (palabra clave o botón del correo)
-    if (kw || /quiero agendar/.test(norm(message))) {
+    // ---- pidió agendar (palabra clave o botón del correo) o acaba de liberar su cita para cambiarla
+    if (kw || rescheduled || /quiero agendar/.test(norm(message))) {
       const opts = await defaultOffer(wsRow, c);
+      if (rescheduled) return (await offer(opts, `Listo, liberé tu horario anterior. Estos son los espacios disponibles (${meetingDetails(c)}):`, 1))
+        || await reply(`Listo, liberé tu horario anterior. Dime qué día y hora te sirven y lo consulto con el asesor.`, { step: "offered", options: [], offered_at: new Date().toISOString() });
       return (await offer(opts, `${e ? "📅 " : ""}¡Con gusto! Estos son los espacios disponibles para tu reunión con el asesor (${meetingDetails(c)}):`, 1))
         || await reply(`En los próximos días no veo espacios libres en la agenda. Dime qué día y hora te sirven y se lo consulto al asesor.`, { step: "offered", options: [], offered_at: new Date().toISOString() });
     }
