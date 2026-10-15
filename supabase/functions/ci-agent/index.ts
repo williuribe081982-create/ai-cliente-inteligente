@@ -2,6 +2,7 @@
 // v58 (2026-10-15): marca WIA · Soluciones Inteligentes (remitente de correo, colores azules y lema en blanco bajo el logo).
 // v57 (2026-10-08): menú en dos niveles por líneas de servicio (settings.lines): líneas → servicios de la línea → cotización.
 // v56 (2026-10-08): marca de la empresa — bienvenida configurable (settings.welcome_text) y emojis en la conversación (settings.use_emojis).
+// v62 (2026-10-15): aviso al asesor por número alterno configurable (gratuito).
 // v61 (2026-10-15): propuesta sin adjunto (roadmap en línea vía botón) para que Gmail no la bloquee.
 // v59 (2026-10-15): envío idempotente por Gmail WIA (sin duplicados por respaldo).
 // v54 (2026-10-01): menú numerado fijo (campo n del catálogo) y correo al asesor con espera/reintentos y registro (advisor_email).
@@ -951,8 +952,10 @@ async function waAdvisor(ws: any, p: any, lead: any, headline: string) {
   const adv = advisorOf(ws);
   const s = ws.settings || {};
   if (!adv.whatsapp || s.advisor?.whatsapp_alerts === false) return;
-  const c = await waCreds();
-  if (!c) { await audit(ws.id, "advisor_whatsapp", "proposal", p.id, { ok: false, reason: "NO_WHATSAPP_CREDENTIALS" }); return; }
+  const c0 = await waCreds();
+  if (!c0) { await audit(ws.id, "advisor_whatsapp", "proposal", p.id, { ok: false, reason: "NO_WHATSAPP_CREDENTIALS" }); return; }
+  // v62: el aviso al asesor puede salir por otro número (p. ej. el número de prueba de Meta, gratuito) — settings.advisor.wa_phone_id.
+  const c = s.advisor?.wa_phone_id ? { ...c0, phoneId: String(s.advisor.wa_phone_id) } : c0;
   const q = p.quote || {};
   const phone = String(lead?.phone || "").replace(/\D/g, "");
   const vals = [headline, lead?.name, lead?.email, phone ? "+" + phone : "", q.solucion, q.inversion?.display, quoteCode(p.id), phone ? `https://wa.me/${phone}` : "(sin número)"].map(waParam);
