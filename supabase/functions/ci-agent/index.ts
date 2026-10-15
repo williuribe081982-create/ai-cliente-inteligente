@@ -1,4 +1,5 @@
 // SIERRA — Asistente Comercial Inteligente: motor del agente (Supabase Edge Function "ci-agent")
+// v65 (2026-10-15): módulo de agendamiento (scheduling.ts) — horarios reales del asesor tras la cotización; se activa con settings.scheduling.enabled.
 // v58 (2026-10-15): marca WIA · Soluciones Inteligentes (remitente de correo, colores azules y lema en blanco bajo el logo).
 // v57 (2026-10-08): menú en dos niveles por líneas de servicio (settings.lines): líneas → servicios de la línea → cotización.
 // v56 (2026-10-08): marca de la empresa — bienvenida configurable (settings.welcome_text) y emojis en la conversación (settings.use_emojis).
@@ -16,6 +17,7 @@
 import { createClient, SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { clean, isEmail, mergeState, buildProposal, buildBundleProposal, bundleConfig, renderHtml, renderEmail, roadmapData } from "./proposal.ts";
 import { buildRoadmapAttachment, b64utf8, safeFileName } from "./roadmap_tpl.ts";
+import { initScheduling, schedCfg, handleTurn, handleAdvisorCommand, handleAdvisorLink, offerAfterQuote, tick as schedTick } from "./scheduling.ts";
 
 const SB_URL = Deno.env.get("SUPABASE_URL")!;
 const SB_SERVICE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -530,9 +532,18 @@ async function actionChat(body: any, caller: Caller, execId: string) {
       const st = fresh?.settings || {};
       await admin.from("workspaces").update({ settings: { ...st, advisor: { ...(st.advisor || {}), wa_window_at: nowIso } } }).eq("id", ws);
       await audit(ws, "advisor_window", "workspace", null, { at: nowIso });
+      // v65: respuestas del asesor a solicitudes de horario especial ("ACEPTO CITA-AB12", "PROPONGO CITA-AB12 jueves 3 pm").
+      const cmd = await handleAdvisorCommand(wsRow, message).catch((e) => `No pude procesar tu respuesta (${(e as Error)?.message || e}).`);
+      if (cmd) return { ok: true, execution_id: execId, conversation_id: null, lead: body.lead || {}, state: body.state || {}, reply: cmd };
       return { ok: true, execution_id: execId, conversation_id: null, lead: body.lead || {}, state: body.state || {},
         reply: "✅ Avisos de SIERRA activos en este WhatsApp por 24 horas.\nCada vez que respondas a un aviso (por ejemplo con *OK*), se renuevan 24 horas más." };
     }
+  }
+
+  // v65: agendamiento de la reunión (solo si la empresa lo tiene activo y el prospecto ya recibió su cotización).
+  if (caller.kind === "public" && clean(body.lead?.phone)) {
+    const t = await handleTurn(wsRow, clean(body.lead.phone), message);
+    if (t) return { ok: true, execution_id: execId, conversation_id: t.conversation_id, lead_id: null, lead: t.lead, reply: t.reply, status: "scheduling", state: {}, proposal: null, auto_send_token: null };
   }
 
   // deno-lint-ignore no-explicit-any
@@ -880,7 +891,7 @@ async function actionChat(body: any, caller: Caller, execId: string) {
   if (proposal?.auto_send_token) {
     const job = (async () => {
       for (let i = 0; i < 3; i++) {
-        try { const r = await actionAutoSendEmail({ proposal_id: proposal.id, auto_send_token: proposal.auto_send_token, public_key: wsRow.public_key }, execId); if (r?.ok) return; }
+        try { const r = await actionAutoSendEmail({ proposal_id: proposal.id, auto_send_token: proposal.auto_send_token, public_key: wsRow.public_key }, execId); if (r?.ok) { await maybeOffer(proposal.id, 9000); return; } }
         catch (e) { console.error("auto_send bg", (e as Error)?.message); }
         await sleep(15000);
       }
@@ -1094,6 +1105,12 @@ async function handleBookingClick(token: string): Promise<Response> {
   ]);
   const adv = advisorOf(ws);
   const q = p.quote || {};
+  // v65: con agendamiento activo, el botón abre el chat de SIERRA, que muestra los horarios reales y agenda allí.
+  const bot = String(ws?.settings?.bot_whatsapp || "").replace(/\D/g, "");
+  if (schedCfg(ws) && bot) {
+    await audit(p.workspace_id, "booking_click", "proposal", p.id, { lead_id: p.lead_id, at: new Date().toISOString(), to: "sierra_scheduling" });
+    return Response.redirect(`https://wa.me/${bot}?text=${encodeURIComponent(`Quiero agendar una reunión (${quoteCode(p.id)})`)}`, 302);
+  }
   const text = `Hola${adv.name && adv.name !== "Asesor" ? " " + adv.name.split(" ")[0] : ""}, soy ${lead?.name || "un cliente"}. Recibí la cotización de ${q.solucion || "sus servicios"} (${quoteCode(p.id)}) y quiero agendar una reunión.`;
   const target = `https://wa.me/${adv.whatsapp}?text=${encodeURIComponent(text)}`;
   // Alerta al asesor (máx. una cada 30 min por cotización) — en segundo plano para no demorar la redirección.
@@ -1397,11 +1414,33 @@ async function actionArchitect(body: any, execId: string) {
   return {ok:true,chat:updated,execution_id:execId};
 }
 
+// ---------- agendamiento (v65) ----------
+initScheduling({ admin, cfg, audit, waCreds, waPost, waAdvisor, mailAdvisor, quoteCode, escH, SB_URL });
+function bgRun(p: Promise<unknown>) {
+  const q = p.catch((e) => console.error("bg", (e as Error)?.message || e));
+  // deno-lint-ignore no-explicit-any
+  const ER = (globalThis as any).EdgeRuntime;
+  if (ER?.waitUntil) ER.waitUntil(q);
+}
+// Tras enviar la cotización: horarios del asesor por WhatsApp (una sola vez; solo si la empresa tiene el módulo activo).
+async function maybeOffer(proposalId: string, delayMs: number) {
+  const { data: p } = await admin.from("proposals").select("workspace_id").eq("id", proposalId).maybeSingle();
+  if (!p) return;
+  const { data: w } = await admin.from("workspaces").select("*").eq("id", p.workspace_id).single();
+  if (!schedCfg(w)) return;
+  await offerAfterQuote(w, proposalId, delayMs);
+}
+
 // ---------- servidor ----------
 Deno.serve(async (req) => {
   if (req.method === "GET") {
     const go = new URL(req.url).searchParams.get("go");
     if (go) return await handleBookingClick(go);
+    const sch = new URL(req.url).searchParams.get("sched");
+    if (sch && /^[0-9a-f-]{36}$/i.test(sch)) {
+      const act = new URL(req.url).searchParams.get("do") === "accept" ? "accept" : "decline";
+      return Response.redirect(await handleAdvisorLink(sch, act), 302);
+    }
     if (new URL(req.url).searchParams.get("wa_setup") === "1") return json(await waSetup());
     const ak = !!(await cfg("ANTHROPIC_API_KEY"));
     const gk = !!(await cfg("GEMINI_API_KEY"));
@@ -1458,7 +1497,16 @@ Deno.serve(async (req) => {
       if (!roleA || !["owner", "admin"].includes(roleA)) return json({ ok: false, error: "FORBIDDEN" }, 403);
       return json(await actionArchitect(body, execId));
     }
-    if (action === "auto_send") return json(await actionAutoSendEmail(body, execId));
+    if (action === "auto_send") {
+      const r = await actionAutoSendEmail(body, execId);
+      if (r?.sent && r.proposal_id) bgRun(maybeOffer(r.proposal_id, 2500));
+      return json(r);
+    }
+    if (action === "sched_tick") {
+      const k = await cfg("SCHED_TICK_KEY");
+      if (!k || clean(body.key) !== k) return json({ ok: false, error: "AUTH_REQUIRED" }, 401);
+      return json({ ok: true, ...(await schedTick()) });
+    }
     if (caller.kind !== "user") return json({ ok: false, error: "AUTH_REQUIRED" }, 401);
     if (action === "approve" || action === "reject") {
       const { data } = await admin.from("proposals").select("workspace_id").eq("id", clean(body.proposal_id)).maybeSingle();
