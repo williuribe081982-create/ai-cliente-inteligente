@@ -2,6 +2,7 @@
 // v58 (2026-10-15): marca WIA · Soluciones Inteligentes (remitente de correo, colores azules y lema en blanco bajo el logo).
 // v57 (2026-10-08): menú en dos niveles por líneas de servicio (settings.lines): líneas → servicios de la línea → cotización.
 // v56 (2026-10-08): marca de la empresa — bienvenida configurable (settings.welcome_text) y emojis en la conversación (settings.use_emojis).
+// v64 (2026-10-15): roadmap en correo aparte, aviso WhatsApp gratis desde SIERRA (ventana 24 h) y envío Gmail más rápido.
 // v63 (2026-10-15): velocidad — modelos lite primero, dos en paralelo, menos tokens de salida.
 // v62 (2026-10-15): aviso al asesor por número alterno configurable (gratuito).
 // v61 (2026-10-15): propuesta sin adjunto (roadmap en línea vía botón) para que Gmail no la bloquee.
@@ -63,7 +64,20 @@ async function sendEmail(init: { method: string; headers: Record<string, string>
     // deno-lint-ignore no-explicit-any
     const post = async (body: any, ms: number): Promise<{ status: number; j: any }> => {
       try {
-        const r = await fetch(relay, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), redirect: "follow", signal: AbortSignal.timeout(ms) });
+        // v64: Apps Script responde 302 SOLO cuando ya terminó de ejecutarse; el 302 confirma el envío
+        // aunque la página de resultado (googleusercontent) falle con 404.
+        const r = await fetch(relay, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), redirect: "manual", signal: AbortSignal.timeout(ms) });
+        if (r.status >= 300 && r.status < 400) {
+          const loc = r.headers.get("location");
+          if (loc) {
+            try {
+              const r2 = await fetch(loc, { signal: AbortSignal.timeout(8000) });
+              const j2 = await r2.json().catch(() => null);
+              if (j2 && typeof j2.ok === "boolean") return { status: r2.status, j: j2 };
+            } catch (_e) { /* resultado ilegible */ }
+          }
+          return { status: r.status, j: body.action === "check" ? null : { ok: true, id: body.key, assumed: true } };
+        }
         const j = await r.json().catch(() => null);
         return { status: r.status, j };
       } catch (e) { return { status: 0, j: { _err: (e as Error)?.message } }; }
@@ -505,6 +519,22 @@ async function actionChat(body: any, caller: Caller, execId: string) {
   const message = clean(body.message).slice(0, 4000);
   if (!message) throw new StepError("GL-CI-01", "EMPTY_MESSAGE", "Mensaje vacío", 400);
 
+  // v64: el asesor (WhatsApp Business del negocio) le escribe a SIERRA → se abre la ventana gratuita de 24 h para sus avisos.
+  {
+    const advA = (wsRow.settings || {}).advisor || {};
+    const advPhone = String(advA.whatsapp || "").replace(/\D/g, "");
+    const fromPhone = String(body.lead?.phone || "").replace(/\D/g, "");
+    if (advPhone && fromPhone === advPhone) {
+      const nowIso = new Date().toISOString();
+      const { data: fresh } = await admin.from("workspaces").select("settings").eq("id", ws).single();
+      const st = fresh?.settings || {};
+      await admin.from("workspaces").update({ settings: { ...st, advisor: { ...(st.advisor || {}), wa_window_at: nowIso } } }).eq("id", ws);
+      await audit(ws, "advisor_window", "workspace", null, { at: nowIso });
+      return { ok: true, execution_id: execId, conversation_id: null, lead: body.lead || {}, state: body.state || {},
+        reply: "✅ Avisos de SIERRA activos en este WhatsApp por 24 horas.\nCada vez que respondas a un aviso (por ejemplo con *OK*), se renuevan 24 horas más." };
+    }
+  }
+
   // deno-lint-ignore no-explicit-any
   let conv: any = null;
   if (body.new_conversation === true) {
@@ -933,7 +963,7 @@ async function mailAdvisor(ws: any, subject: string, html: string) {
   // Resend limita a ~2 correos/segundo: el aviso sale justo después del correo al cliente, así que se espera y se reintenta.
   let last = "";
   for (let i = 0; i < 4; i++) {
-    await sleep(i === 0 ? 1500 : 2500 * i);
+    if (i > 0) await sleep(2000 * i);
     try {
       const r = await sendEmail({ method: "POST", headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" }, body: JSON.stringify({ from, to: [adv.email], subject, html }) });
       if (r.ok) { await audit(ws.id, "advisor_email", "workspace", null, { ok: true, subject: subject.slice(0, 160), attempts: i + 1 }); return; }
@@ -963,22 +993,31 @@ async function waPost(c: { token: string; phoneId: string }, payload: any) {
 async function waAdvisor(ws: any, p: any, lead: any, headline: string) {
   const adv = advisorOf(ws);
   const s = ws.settings || {};
-  if (!adv.whatsapp || s.advisor?.whatsapp_alerts === false) return;
+  const a = s.advisor || {};
+  if (!adv.whatsapp || a.whatsapp_alerts === false) return;
   const c0 = await waCreds();
   if (!c0) { await audit(ws.id, "advisor_whatsapp", "proposal", p.id, { ok: false, reason: "NO_WHATSAPP_CREDENTIALS" }); return; }
-  // v62: el aviso al asesor puede salir por otro número (p. ej. el número de prueba de Meta, gratuito) — settings.advisor.wa_phone_id.
-  const c = s.advisor?.wa_phone_id ? { ...c0, phoneId: String(s.advisor.wa_phone_id) } : c0;
   const q = p.quote || {};
   const phone = String(lead?.phone || "").replace(/\D/g, "");
   const vals = [headline, lead?.name, lead?.email, phone ? "+" + phone : "", q.solucion, q.inversion?.display, quoteCode(p.id), phone ? `https://wa.me/${phone}` : "(sin número)"].map(waParam);
-  const tpl = s.advisor?.wa_template || WA_TPL;
-  // 1) Plantilla aprobada (funciona siempre, aunque el asesor no haya escrito en 24 h)
-  const r1 = await waPost(c, { to: adv.whatsapp, type: "template", template: { name: tpl, language: { code: s.advisor?.wa_template_lang || "es" }, components: [{ type: "body", parameters: vals.map((t) => ({ type: "text", text: t })) }] } });
-  if (r1.ok) { await audit(ws.id, "advisor_whatsapp", "proposal", p.id, { ok: true, via: "template" }); return; }
-  // 2) Texto libre (funciona si el asesor le escribió al bot en las últimas 24 h)
   const text = WA_TPL_TEXT.replace(/\{\{(\d)\}\}/g, (_m, i) => vals[Number(i) - 1] ?? "");
-  const r2 = await waPost(c, { to: adv.whatsapp, type: "text", text: { preview_url: false, body: "🔥 " + text } });
-  await audit(ws.id, "advisor_whatsapp", "proposal", p.id, { ok: r2.ok, via: r2.ok ? "text" : null, template_error: r1.body, text_error: r2.ok ? null : r2.body });
+  // v64: 1) GRATIS desde el número de SIERRA si el asesor le escribió en las últimas 24 h (ventana de servicio de Meta).
+  const winAt = a.wa_window_at ? Date.parse(a.wa_window_at) : 0;
+  if (Date.now() - winAt < 23.5 * 3600 * 1000) {
+    const r = await waPost(c0, { to: adv.whatsapp, type: "text", text: { preview_url: false, body: "🔥 " + text + "\n\n(Responde *OK* a este mensaje para mantener los avisos activos 24 h más.)" } });
+    if (r.ok) { await audit(ws.id, "advisor_whatsapp", "proposal", p.id, { ok: true, via: "sierra_text", to: adv.whatsapp }); return; }
+  }
+  // 2) Respaldo gratuito: número de prueba de Meta → número autorizado (settings.advisor.wa_fallback).
+  const fb = a.wa_fallback || null;
+  if (fb?.phone_id && fb?.to) {
+    const r = await waPost({ ...c0, phoneId: String(fb.phone_id) }, { to: String(fb.to), type: "template", template: { name: fb.template || WA_TPL, language: { code: fb.lang || "es" }, components: [{ type: "body", parameters: vals.map((t) => ({ type: "text", text: t })) }] } });
+    await audit(ws.id, "advisor_whatsapp", "proposal", p.id, { ok: r.ok, via: "fallback_test_number", to: fb.to, error: r.ok ? null : r.body, window_closed: true });
+    return;
+  }
+  // 3) Plantilla en el número de SIERRA (requiere método de pago en Meta).
+  const tpl = a.wa_template || WA_TPL;
+  const r1 = await waPost(c0, { to: adv.whatsapp, type: "template", template: { name: tpl, language: { code: a.wa_template_lang || "es" }, components: [{ type: "body", parameters: vals.map((t) => ({ type: "text", text: t })) }] } });
+  await audit(ws.id, "advisor_whatsapp", "proposal", p.id, { ok: r1.ok, via: "template", error: r1.ok ? null : r1.body });
 }
 // Configuración única: crea la plantilla del aviso en la cuenta de WhatsApp Business (idempotente).
 async function waSetup() {
@@ -1002,6 +1041,30 @@ async function waSetup() {
   return { ok: r.ok, waba, created: await r.json().catch(() => null) };
 }
 // Ficha del prospecto para el asesor humano (se envía cuando el cliente recibe su cotización).
+// deno-lint-ignore no-explicit-any
+async function sendRoadmapMail(ws: any, p: any, to: string, viewUrl: string, bookUrl: string | null) {
+  const s = ws.settings || {};
+  const q = p.quote || {};
+  const company = s.company_name || ws.name || "WIA · Soluciones Inteligentes";
+  const client = q.cliente?.nombre || q.cliente?.empresa || "";
+  const logo = s.logo_url ? `<img src="${escH(s.logo_url)}" alt="${escH(company)}" style="max-width:220px;height:auto;margin:0 auto 10px;display:block">` : "";
+  const btn = (href: string, label: string, bg: string, fg: string) => `<a href="${escH(href)}" style="display:inline-block;background:${bg};color:${fg};text-decoration:none;padding:15px 30px;border-radius:999px;font-weight:700;font-size:16px;margin:6px">${label}</a>`;
+  const html = `<div style="background:#030b1a;padding:28px 12px;font-family:Arial,Helvetica,sans-serif">
+<div style="max-width:600px;margin:0 auto;background:#071430;border:1px solid #1d3a66;border-radius:18px;padding:34px 26px;text-align:center;color:#e8f1ff">
+${logo}<div style="font-size:12px;letter-spacing:3px;text-transform:uppercase;color:#9fe0ff;margin-top:6px">Arquitectura empresarial con IA</div>
+<h1 style="font-size:26px;margin:22px 0 8px;color:#ffffff">Tu Roadmap interactivo</h1>
+<div style="font-size:17px;color:#22a6ff;font-weight:700">${escH(q.solucion || "")}</div>
+<p style="font-size:15px;line-height:1.7;color:#c9d8ef;margin:20px 0">${client ? `Hola ${escH(client)}, ` : ""}aquí tienes el plan paso a paso de tu solución: etapas, entregables y tiempos, en una presentación interactiva que puedes recorrer desde el celular o el computador.</p>
+<div style="margin:22px 0">${btn(viewUrl, "🚀 Ver mi roadmap interactivo", "#22a6ff", "#031226")}</div>
+${bookUrl ? `<div>${btn(bookUrl, "📅 Agendar reunión", "#16264a", "#e8f1ff")}</div>` : ""}
+<p style="font-size:13px;color:#7f93b5;margin-top:26px">Código de cotización: <b>${quoteCode(p.id)}</b> · La cotización formal te llegó en el correo anterior.</p>
+</div><div style="text-align:center;font-size:12px;color:#5d6f8f;margin-top:14px">${escH(company)}</div></div>`;
+  const key = await cfg("RESEND_API_KEY");
+  const from = s.email_from || (await cfg("EMAIL_FROM")) || "SIERRA <onboarding@resend.dev>";
+  const r = await sendEmail({ method: "POST", headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ from, to: [to], subject: `Tu Roadmap interactivo: ${q.solucion || "tu solución"} — ${company}`, html, reply_to: s.contact_email || undefined }) });
+  await audit(ws.id, "roadmap_email", "proposal", p.id, { ok: r.ok, recipient: to });
+}
 // deno-lint-ignore no-explicit-any
 async function sendLeadCard(ws: any, p: any, lead: any, viewUrl: string | null) {
   const { data: hist } = await admin.from("messages").select("role,content").eq("conversation_id", p.conversation_id).in("role", ["user", "assistant"]).order("created_at", { ascending: true }).limit(40);
@@ -1200,7 +1263,13 @@ async function actionAutoSendEmail(body: any, execId: string) {
   await record("sent", null, rb.id || null);
   // v63: el aviso al asesor sale en segundo plano para no demorar la confirmación al cliente.
   {
-    const lc = sendLeadCard(ws, p, lead, viewUrl).catch((e) => console.error("lead card", (e as Error)?.message));
+    const lc = (async () => {
+      // v64: segundo correo al cliente con su roadmap interactivo (sin adjunto, abre en línea).
+      await Promise.all([
+        viewUrl ? sendRoadmapMail(ws, p, to, viewUrl, bookUrl).catch((e) => console.error("roadmap mail", (e as Error)?.message)) : Promise.resolve(),
+        sendLeadCard(ws, p, lead, viewUrl),
+      ]);
+    })().catch((e) => console.error("lead card", (e as Error)?.message));
     // deno-lint-ignore no-explicit-any
     const ERl = (globalThis as any).EdgeRuntime;
     if (ERl?.waitUntil) ERl.waitUntil(lc);
