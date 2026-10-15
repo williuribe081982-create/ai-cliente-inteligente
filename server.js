@@ -338,6 +338,16 @@ app.post("/webhook",async(req,res)=>{
   }
   const n=(req.body.entry||[]).reduce((k,e)=>k+(e.changes||[]).reduce((m,c)=>m+(c.value?.messages||[]).length,0),0);
   console.log(new Date().toISOString(),`Webhook recibido: ${n} mensaje(s)`);
+  // Estados de entrega: se registra cuando Meta NO entrega un mensaje (p. ej. aviso al asesor), con el motivo.
+  try{
+    for(const e of (req.body.entry||[])) for(const c of (e.changes||[])) for(const st of (c.value?.statuses||[])){
+      if(st.status==="failed"){
+        const er=(st.errors||[])[0]||{};
+        const to=String(st.recipient_id||"");
+        console.error(new Date().toISOString(),`Entrega FALLIDA a ...${to.slice(-4)}: código ${er.code||"?"} — ${er.title||""} ${er.error_data?.details||er.message||""}`.trim());
+      }
+    }
+  }catch{}
   // Acknowledge Meta immediately.
   res.sendStatus(200);
 
