@@ -2,6 +2,7 @@
 // v58 (2026-10-15): marca WIA · Soluciones Inteligentes (remitente de correo, colores azules y lema en blanco bajo el logo).
 // v57 (2026-10-08): menú en dos niveles por líneas de servicio (settings.lines): líneas → servicios de la línea → cotización.
 // v56 (2026-10-08): marca de la empresa — bienvenida configurable (settings.welcome_text) y emojis en la conversación (settings.use_emojis).
+// v63 (2026-10-15): velocidad — modelos lite primero, dos en paralelo, menos tokens de salida.
 // v62 (2026-10-15): aviso al asesor por número alterno configurable (gratuito).
 // v61 (2026-10-15): propuesta sin adjunto (roadmap en línea vía botón) para que Gmail no la bloquee.
 // v59 (2026-10-15): envío idempotente por Gmail WIA (sin duplicados por respaldo).
@@ -353,45 +354,50 @@ async function callGemini(key: string, system: string, messages: { role: string;
   const pref = await cfg("CI_MODEL");
   const live = await geminiModels(key);
   const now0 = Date.now();
-  const models = ([...new Set([pref && pref.startsWith("gemini") ? pref : null, ...live, "gemini-flash-latest", "gemini-2.5-flash", "gemini-flash-lite-latest", "gemini-2.5-flash-lite"].filter(Boolean))] as string[])
+  const all = ([...new Set([pref && pref.startsWith("gemini") ? pref : null, ...live, "gemini-flash-latest", "gemini-2.5-flash", "gemini-flash-lite-latest", "gemini-2.5-flash-lite"].filter(Boolean))] as string[])
     .filter((m) => (gemDead.get(m) || 0) < now0);
-  let lastErr = "";
-  const deadline = Date.now() + 45000; // el canal (WhatsApp) espera máx. ~55 s
+  // v63 (velocidad): primero los modelos "lite" (más rápidos); los demás quedan de respaldo.
+  const models = [...all.filter((m) => m === pref), ...all.filter((m) => m !== pref && /lite/.test(m)), ...all.filter((m) => m !== pref && !/lite/.test(m))];
+  const payload = JSON.stringify({
+    systemInstruction: { parts: [{ text: system }] },
+    contents: messages.map((m) => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] })),
+    tools: [{ functionDeclarations: [{ name: TURN_TOOL.name, description: TURN_TOOL.description, parameters: toGem(TURN_TOOL.input_schema) }] }],
+    toolConfig: { functionCallingConfig: { mode: "ANY", allowedFunctionNames: [TURN_TOOL.name] } },
+    generationConfig: { temperature: 0.4, maxOutputTokens: 2500 },
+  });
   const errs: string[] = [];
-  for (let round = 0; round < 4 && deadline - Date.now() > 3000; round++) {
-  if (round > 0) await sleep(1200);
-  for (const model of models) {
-    for (let attempt = 0; attempt < 1; attempt++) {
+  // deno-lint-ignore no-explicit-any
+  const tryModel = async (model: string, ms: number): Promise<any> => {
+    let res: Response;
+    try {
+      res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+        signal: AbortSignal.timeout(ms), method: "POST",
+        headers: { "x-goog-api-key": key, "content-type": "application/json" }, body: payload,
+      });
+    } catch (_e) { errs.push(`Gemini ${model} timeout`); throw new Error("timeout"); }
+    const body = await res.json().catch(() => ({}));
+    if (res.status === 404 || (res.status === 400 && /not found|not supported/i.test(JSON.stringify(body)))) { gemDead.set(model, Date.now() + 6 * 3600 * 1000); errs.push(`modelo ${model} no disponible`); throw new Error("dead"); }
+    if (!res.ok) { errs.push(`Gemini ${model} ${res.status}`); throw new Error(String(res.status)); }
+    // deno-lint-ignore no-explicit-any
+    const fc = (body.candidates?.[0]?.content?.parts || []).find((p: any) => p.functionCall)?.functionCall;
+    if (!fc?.args?.reply) { errs.push(`Gemini ${model} sin estructura`); throw new Error("shape"); }
+    return { out: fc.args, model, usage: body.usageMetadata };
+  };
+  const deadline = Date.now() + 45000; // el canal (WhatsApp) espera máx. ~55 s
+  // Ronda rápida: dos modelos en paralelo; gana el primero que responda bien.
+  const fast = models.slice(0, 2);
+  if (fast.length) {
+    try { return await Promise.any(fast.map((m) => tryModel(m, 15000))); } catch (_e) { /* sigue con el resto */ }
+  }
+  for (let round = 0; round < 3 && deadline - Date.now() > 3000; round++) {
+    if (round > 0) await sleep(800);
+    for (const model of (round === 0 ? models.slice(2) : models)) {
       const left = deadline - Date.now();
       if (left < 3000) break;
-      let res: Response;
-      try {
-        res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-        signal: AbortSignal.timeout(Math.min(12000, left)),
-        method: "POST",
-        headers: { "x-goog-api-key": key, "content-type": "application/json" },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: system }] },
-          contents: messages.map((m) => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] })),
-          tools: [{ functionDeclarations: [{ name: TURN_TOOL.name, description: TURN_TOOL.description, parameters: toGem(TURN_TOOL.input_schema) }] }],
-          toolConfig: { functionCallingConfig: { mode: "ANY", allowedFunctionNames: [TURN_TOOL.name] } },
-          generationConfig: { temperature: 0.4, maxOutputTokens: 4000 },
-        }),
-      });
-      } catch (_e) { lastErr = `Gemini ${model} timeout`; errs.push(lastErr); continue; }
-      const body = await res.json().catch(() => ({}));
-      if (res.status === 404) { gemDead.set(model, Date.now() + 6 * 3600 * 1000); lastErr = `modelo ${model} no disponible`; errs.push(lastErr); break; }
-      if ([429, 500, 503].includes(res.status)) { lastErr = `Gemini ${model} ${res.status}`; errs.push(lastErr); break; }
-      if (!res.ok && res.status === 400 && /not found|not supported/i.test(JSON.stringify(body))) { gemDead.set(model, Date.now() + 6 * 3600 * 1000); errs.push(`modelo ${model} no soportado`); break; }
-      if (!res.ok) throw new StepError("GL-CI-02", "LLM_ERROR", `Gemini ${res.status}: ${JSON.stringify(body?.error || body).slice(0, 400)}`, 502);
-      // deno-lint-ignore no-explicit-any
-      const fc = (body.candidates?.[0]?.content?.parts || []).find((p: any) => p.functionCall)?.functionCall;
-      if (!fc?.args?.reply) { lastErr = `Gemini ${model} sin estructura (${JSON.stringify(body?.candidates?.[0]?.finishReason || "").slice(0, 60)})`; errs.push(lastErr); break; }
-      return { out: fc.args, model, usage: body.usageMetadata };
+      try { return await tryModel(model, Math.min(12000, left)); } catch (_e) { /* siguiente modelo */ }
     }
   }
-  }
-  throw new StepError("GL-CI-02", "LLM_ERROR", "Gemini: " + (errs.join(" | ") || lastErr), 502);
+  throw new StepError("GL-CI-02", "LLM_ERROR", "Gemini: " + (errs.join(" | ") || "sin respuesta"), 502);
 }
 
 // deno-lint-ignore no-explicit-any
@@ -1186,7 +1192,13 @@ async function actionAutoSendEmail(body: any, execId: string) {
     throw new StepError("GL-CI-07", "EMAIL_FAILED", err, 502);
   }
   await record("sent", null, rb.id || null);
-  try { await sendLeadCard(ws, p, lead, viewUrl); } catch (e) { console.error("lead card", (e as Error)?.message); }
+  // v63: el aviso al asesor sale en segundo plano para no demorar la confirmación al cliente.
+  {
+    const lc = sendLeadCard(ws, p, lead, viewUrl).catch((e) => console.error("lead card", (e as Error)?.message));
+    // deno-lint-ignore no-explicit-any
+    const ERl = (globalThis as any).EdgeRuntime;
+    if (ERl?.waitUntil) ERl.waitUntil(lc);
+  }
   const cleanedMeta = { ...(lead.metadata || {}) };
   delete cleanedMeta.auto_send_token;
   await admin.from("leads")
