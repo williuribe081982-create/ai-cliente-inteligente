@@ -708,7 +708,13 @@ async function actionChat(body: any, caller: Caller, execId: string) {
   const greeted = (hist || []).some((m: { role: string }) => m.role === "assistant");
   // deno-lint-ignore no-explicit-any
   let out: any, model: string, usage: unknown;
-  try {
+  // v63: saludo puro al inicio → bienvenida inmediata, sin esperar a la IA.
+  const pureGreeting = !greeted && isGreeting(message) && message.trim().split(/\s+/).length <= 4 && !/[?¿]|cotiz|precio|servicio|quiero|necesito/i.test(message);
+  const welcomeTxt = String(settings.welcome_text || "").trim();
+  if (pureGreeting && welcomeTxt) {
+    out = { reply: welcomeTxt + (settings.use_emojis === false ? "\n¿En qué te puedo servir hoy?" : "\n¿En qué te puedo servir hoy? 😊"), intent: "saludo", confirmed: [], hypotheses: [], missing: [], service_match: { service_id: null, reason: "saludo" }, out_of_catalog: false, advance_confirmed: false, ready_for_proposal: false, sources_used: [] };
+    model = "welcome"; usage = null;
+  } else try {
     ({ out, model, usage } = await callLLM(systemPrompt(company, catalog, kdocs, state, leadInfo, bundleInfo, greeted, lines), recent));
   } catch (e) {
     await logError(ws, execId, "GL-CI-02", "LLM_FALLBACK", (e as Error)?.message || String(e), { conversation_id: conv.id });
