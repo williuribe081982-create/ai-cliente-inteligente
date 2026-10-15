@@ -1,4 +1,5 @@
 // SIERRA — Asistente Comercial Inteligente: motor del agente (Supabase Edge Function "ci-agent")
+// v66 (2026-10-15): cierre por WhatsApp (handoff.ts) — tras la cotización, invita a escribirle al asesor por WhatsApp Business; settings.handoff.enabled.
 // v65 (2026-10-15): módulo de agendamiento (scheduling.ts) — horarios reales del asesor tras la cotización; se activa con settings.scheduling.enabled.
 // v58 (2026-10-15): marca WIA · Soluciones Inteligentes (remitente de correo, colores azules y lema en blanco bajo el logo).
 // v57 (2026-10-08): menú en dos niveles por líneas de servicio (settings.lines): líneas → servicios de la línea → cotización.
@@ -18,6 +19,7 @@ import { createClient, SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { clean, isEmail, mergeState, buildProposal, buildBundleProposal, bundleConfig, renderHtml, renderEmail, roadmapData } from "./proposal.ts";
 import { buildRoadmapAttachment, b64utf8, safeFileName } from "./roadmap_tpl.ts";
 import { initScheduling, schedCfg, handleTurn, handleAdvisorCommand, handleAdvisorLink, offerAfterQuote, tick as schedTick } from "./scheduling.ts";
+import { initHandoff, handoffCfg, handoffAfterQuote } from "./handoff.ts";
 
 const SB_URL = Deno.env.get("SUPABASE_URL")!;
 const SB_SERVICE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -1416,19 +1418,21 @@ async function actionArchitect(body: any, execId: string) {
 
 // ---------- agendamiento (v65) ----------
 initScheduling({ admin, cfg, audit, waCreds, waPost, waAdvisor, mailAdvisor, quoteCode, escH, SB_URL });
+initHandoff({ admin, audit, waCreds, waPost, quoteCode });
 function bgRun(p: Promise<unknown>) {
   const q = p.catch((e) => console.error("bg", (e as Error)?.message || e));
   // deno-lint-ignore no-explicit-any
   const ER = (globalThis as any).EdgeRuntime;
   if (ER?.waitUntil) ER.waitUntil(q);
 }
-// Tras enviar la cotización: horarios del asesor por WhatsApp (una sola vez; solo si la empresa tiene el módulo activo).
+// Tras enviar la cotización (una sola vez por cotización), según lo que la empresa tenga activo:
+// agendamiento → horarios reales del asesor; cierre por WhatsApp → enlace directo al WhatsApp Business del asesor.
 async function maybeOffer(proposalId: string, delayMs: number) {
   const { data: p } = await admin.from("proposals").select("workspace_id").eq("id", proposalId).maybeSingle();
   if (!p) return;
   const { data: w } = await admin.from("workspaces").select("*").eq("id", p.workspace_id).single();
-  if (!schedCfg(w)) return;
-  await offerAfterQuote(w, proposalId, delayMs);
+  if (schedCfg(w)) return await offerAfterQuote(w, proposalId, delayMs);
+  if (handoffCfg(w)) return await handoffAfterQuote(w, proposalId, delayMs);
 }
 
 // ---------- servidor ----------
