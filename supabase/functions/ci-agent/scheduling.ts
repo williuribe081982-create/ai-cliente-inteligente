@@ -116,13 +116,21 @@ export function addDays(ymd: string, n: number): string {
 const dowOf = (ymd: string) => { const [y, m, d] = ymd.split("-").map(Number); return new Date(Date.UTC(y, m - 1, d)).getUTCDay(); };
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 export function fmtDay(d: Date, tz: string) {
-  return cap(new Intl.DateTimeFormat("es-CO", { timeZone: tz, weekday: "long", day: "numeric", month: "long" }).format(d));
+  return new Intl.DateTimeFormat("es-CO", { timeZone: tz, weekday: "long", day: "numeric", month: "long" }).format(d).replace(",", "");
 }
+const fmtDayCap = (d: Date, tz: string) => cap(fmtDay(d, tz));
 export function fmtTime(d: Date, tz: string) {
   return new Intl.DateTimeFormat("es-CO", { timeZone: tz, hour: "numeric", minute: "2-digit", hour12: true }).format(d)
     .replace(/[\u00a0\u202f]/g, " ").replace(/\s*a\.?\s*m\.?/i, " a. m.").replace(/\s*p\.?\s*m\.?/i, " p. m.");
 }
-const fmtFull = (d: Date, tz: string) => `${fmtDay(d, tz)}, ${fmtTime(d, tz)}`;
+const fmtFull = (d: Date, tz: string) => `${fmtDay(d, tz)} a las ${fmtTime(d, tz)}`;
+/** "hoy antes de las 4:00 p. m." / "mañana antes de las 9:30 a. m." / "antes del lunes 19 de octubre a las 9:00 a. m." */
+function deadlineTxt(d: Date, tz: string, now = new Date()) {
+  const a = local(d, tz).ymd, t = local(now, tz).ymd;
+  if (a === t) return `hoy antes de las ${fmtTime(d, tz)}`;
+  if (a === addDays(t, 1)) return `mañana antes de las ${fmtTime(d, tz)}`;
+  return `antes del ${fmtFull(d, tz)}`;
+}
 
 // ---------------------------------------------------------------- cálculo de espacios libres
 export type Busy = { start: number; end: number };
@@ -273,7 +281,8 @@ export function parseChoice(text: string, options: Slot[], tz: string): number {
   if (m) { const n = ord[m[1].replace(/^tercer$/, "tercero").replace(/^primer$/, "primero")] || Number(m[1]); return n >= 1 && n <= options.length ? n - 1 : -1; }
   // "el de las 11", "11 am", "a las 3"
   const h = t.match(/\b(?:las?\s+)?(\d{1,2})(?:[:.](\d{2}))?\s*(a\.?\s?m\.?|p\.?\s?m\.?|am|pm)?\b/);
-  if (h && /\b(las?|am|pm|a\.? ?m|p\.? ?m|el de)\b/.test(t) && t.split(" ").length <= 7) {
+  const mentionsDay = /\b(lunes|martes|miercoles|jueves|viernes|sabado|domingo|manana|hoy|semana|de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre))\b/.test(t.replace(/\b(de|en|por) la manana\b/g, "")) || /\b(el|dia)\s+\d{1,2}\b(?!\s*(:|am|pm|a\.|p\.))/.test(t);
+  if (h && !mentionsDay && /\b(las?|am|pm|a\.? ?m|p\.? ?m|el de)\b/.test(t) && t.split(" ").length <= 7) {
     const want = hourOf(Number(h[1]), Number(h[2] || 0), h[3]);
     const idx = options.map((o, i) => ({ i, m: local(new Date(o.start), tz).minutes })).filter((x) => x.m === want);
     if (idx.length === 1) return idx[0].i;
@@ -347,7 +356,7 @@ function listSlots(c: SchedCfg, opts: Slot[]): string {
   let lastDay = "";
   opts.forEach((s, i) => {
     const d = new Date(s.start);
-    const day = fmtDay(d, c.timezone);
+    const day = fmtDayCap(d, c.timezone);
     if (day !== lastDay) { out.push((out.length ? "\n" : "") + `*${day}*`); lastDay = day; }
     out.push(`${c.emojis ? NUM[i] : `${i + 1}.`} ${fmtTime(d, c.timezone)}`);
   });
@@ -484,7 +493,7 @@ function confirmText(c: SchedCfg, appt: any, lead: any) {
   const d = new Date(appt.starts_at), e = c.emojis;
   const where = appt.meet_url ? `${e ? "💻 " : ""}Google Meet: ${appt.meet_url}` : appt.location ? `${e ? "📍 " : ""}${appt.location}` : c.virtual ? `${e ? "💻 " : ""}El enlace de la videollamada llegará a tu correo.` : "";
   const mail = lead?.email && c.provider === "google_bridge" ? `\nTe envié la invitación a ${lead.email} para que quede en tu calendario.` : "";
-  return `${e ? "✅ " : ""}¡Reunión confirmada!\n${e ? "📅 " : ""}${fmtDay(d, c.timezone)}, ${fmtTime(d, c.timezone)} (hora Colombia, ${c.slot_minutes} min)\n${where}${mail}\n\nSi necesitas cambiarla, escríbeme por aquí.`;
+  return `${e ? "✅ " : ""}¡Reunión confirmada!\n${e ? "📅 " : ""}${fmtDayCap(d, c.timezone)}, ${fmtTime(d, c.timezone)} (hora Colombia, ${c.slot_minutes} min)\n${where}${mail}\n\nSi necesitas cambiarla, escríbeme por aquí.`;
 }
 async function notifyAdvisorBooked(wsRow: any, c: SchedCfg, ctx: any, appt: any) {
   if (c.dry_run) { await D.audit(wsRow.id, "sched_advisor_dry_run", "appointment", appt.id, { kind: "booked" }); return; }
@@ -555,16 +564,16 @@ async function notifyAdvisorRequest(wsRow: any, c: SchedCfg, ctx: any, appt: any
   const accept = `${D.SB_URL}/functions/v1/ci-agent?sched=${appt.action_token}&do=accept`;
   const decline = `${D.SB_URL}/functions/v1/ci-agent?sched=${appt.action_token}&do=decline`;
   const propose = c.bot_whatsapp ? `https://wa.me/${c.bot_whatsapp}?text=${encodeURIComponent(`PROPONGO ${code} `)}` : null;
-  const limit = fmtFull(new Date(appt.respond_by), c.timezone);
-  const head = `${reminder ? "⏰ RECORDATORIO — " : ""}🙋 Solicitud de horario especial ${code}: ${fmtFull(d, c.timezone)}. Responde antes de ${limit}. Escribe a SIERRA "ACEPTO ${code}" o "PROPONGO ${code} jueves 3 pm"`;
+  const limit = deadlineTxt(new Date(appt.respond_by), c.timezone);
+  const head = `${reminder ? "⏰ RECORDATORIO — " : ""}🙋 Solicitud de horario especial ${code}: ${fmtFull(d, c.timezone)}. Responde ${limit}. Escribe a SIERRA "ACEPTO ${code}" o "PROPONGO ${code} jueves 3 pm"`;
   const q = ctx.proposal.quote || {};
   const rm = await roadmapUrlOf(wsRow, ctx.proposal);
   const btn = (href: string, label: string, bgc: string) => `<a href="${href}" style="display:inline-block;margin:6px 8px 0 0;background:${bgc};color:#fff;text-decoration:none;padding:10px 18px;border-radius:999px;font-weight:600">${label}</a>`;
-  const extra = `<p style="margin:16px 0 4px">${btn(accept, "✅ Acepto este horario", "#16a34a")}${btn(decline, "No puedo", "#6b7280")}${propose ? btn(propose, "Proponer otro horario (WhatsApp)", "#22a6ff") : ""}</p><p style="font-size:12px;color:#5b6478">También puedes escribirle a SIERRA por WhatsApp: <b>ACEPTO ${code}</b> o <b>PROPONGO ${code} jueves 3 pm</b>. Si no respondes antes de ${D.escH(limit)}, SIERRA le ofrecerá al cliente los espacios libres más cercanos.</p>`;
+  const extra = `<p style="margin:16px 0 4px">${btn(accept, "✅ Acepto este horario", "#16a34a")}${btn(decline, "No puedo", "#6b7280")}${propose ? btn(propose, "Proponer otro horario (WhatsApp)", "#22a6ff") : ""}</p><p style="font-size:12px;color:#5b6478">También puedes escribirle a SIERRA por WhatsApp: <b>ACEPTO ${code}</b> o <b>PROPONGO ${code} jueves 3 pm</b>. Si no respondes ${D.escH(limit)}, SIERRA le ofrecerá al cliente los espacios libres más cercanos.</p>`;
   await Promise.allSettled([
     D.waAdvisor(wsRow, ctx.proposal, ctx.lead || {}, head),
     D.mailAdvisor(wsRow, `${reminder ? "⏰ Recordatorio: " : ""}🙋 ${ctx.lead?.name || "Cliente"} pide reunión fuera de agenda — ${fmtFull(d, c.timezone)} (${code})`,
-      fichaHtml(c, ctx, "🙋 Solicitud de horario especial", `El cliente pidió <b>${D.escH(fmtFull(d, c.timezone))}</b> (fuera de la agenda habitual). Le dijimos que le confirmamos antes de <b>${D.escH(limit)}</b>.`, rm, q, extra)),
+      fichaHtml(c, ctx, "🙋 Solicitud de horario especial", `El cliente pidió <b>${D.escH(fmtFull(d, c.timezone))}</b> (fuera de la agenda habitual). Le dijimos que le confirmamos <b>${D.escH(limit)}</b>.`, rm, q, extra)),
   ]);
 }
 
@@ -664,7 +673,7 @@ export async function handleTurn(wsRow: any, phone: string, message: string): Pr
       await D.admin.from("appointments").update({ status: "cancelled", updated_at: new Date().toISOString() }).eq("id", appt.id);
       await D.audit(ws, "appointment_cancelled", "appointment", appt.id, { by: "client", reschedule: resch && !cancel });
       if (!c.dry_run) bg(D.mailAdvisor(wsRow, `❌ ${ctx.lead?.name || "Cliente"} ${resch && !cancel ? "reprogramó" : "canceló"} su reunión del ${fmtFull(new Date(appt.starts_at), tz)} (${D.quoteCode(ctx.proposal.id)})`, `<p>${D.escH(ctx.lead?.name || "El cliente")} ${resch && !cancel ? "pidió cambiar" : "canceló"} la reunión del <b>${D.escH(fmtFull(new Date(appt.starts_at), tz))}</b>. El evento se retiró del calendario.</p>`));
-      if (cancel && !resch) return await reply(`Listo, cancelé tu reunión del ${fmtFull(new Date(appt.starts_at), tz)}. Cuando quieras agendar otra, escríbeme *agendar*.`, { step: "idle" });
+      if (cancel && !resch) return await reply(`Listo, cancelé tu reunión del ${fmtFull(new Date(appt.starts_at), tz)} 👍\nCuando quieras agendar otra, escríbeme *agendar*.`, { step: "idle" });
       const pref = parsePref(message, c);
       const opts = pref ? await prefOptions(wsRow, c, pref) : await defaultOffer(wsRow, c);
       return (await offer(opts.slice(0, c.slots_to_offer), `Listo, liberé tu horario anterior. Estos son los espacios disponibles (${meetingDetails(c)}):`, 1))
@@ -748,7 +757,7 @@ export async function handleTurn(wsRow: any, phone: string, message: string): Pr
       return await reply(`Para preparar bien la reunión agendamos desde el día siguiente. ¿Qué otro día te sirve?`, null);
     }
     const ap = await createSpecialRequest(wsRow, c!, ctx!, start);
-    return await reply(`Ese horario (${fmtFull(start, tz)}) está fuera de la agenda habitual, pero ya se lo solicité al asesor. ${e ? "🙌 " : ""}Te confirmo por aquí antes de *${fmtFull(new Date(ap.respond_by), tz)}*.`, { step: "special_pending", appointment_id: ap.id }, { special: true });
+    return await reply(`Ese horario (${fmtFull(start, tz)}) está fuera de la agenda habitual, pero ya se lo solicité al asesor. ${e ? "🙌 " : ""}Te confirmo por aquí *${deadlineTxt(new Date(ap.respond_by), tz)}*`, { step: "special_pending", appointment_id: ap.id }, { special: true });
   }
 }
 async function prefOptions(wsRow: any, c: SchedCfg, pref: Pref): Promise<Slot[]> {
@@ -802,7 +811,7 @@ async function advisorAccept(wsRow: any, c: SchedCfg, ap: any): Promise<string> 
   }
   await saveSched(ctx.proposal.conversation_id, { step: "confirmed", appointment_id: ap.id, proposal_id: ctx.proposal.id });
   await sendClient(wsRow, c, ctx.lead.phone, `${c.emojis ? "🙌 " : ""}¡Buenas noticias! El asesor aceptó tu horario.\n\n` + confirmText(c, r.appt, ctx.lead), ctx.proposal.conversation_id, { kind: "special_accepted" });
-  return `✅ Listo. Reunión confirmada con ${ctx.lead?.name || "el cliente"} el ${fmtFull(new Date(ap.starts_at), c.timezone)}. Ya le avisé y quedó en tu calendario.`;
+  return `✅ Listo. Reunión confirmada con ${ctx.lead?.name || "el cliente"} el ${fmtFull(new Date(ap.starts_at), c.timezone)}: ya le avisé y quedó en tu calendario.`;
 }
 async function advisorDecline(wsRow: any, c: SchedCfg, ap: any): Promise<string> {
   const ctx = await ctxForAppt(ap);
