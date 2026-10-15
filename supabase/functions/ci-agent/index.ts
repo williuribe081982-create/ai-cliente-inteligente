@@ -2,6 +2,7 @@
 // v58 (2026-10-15): marca WIA · Soluciones Inteligentes (remitente de correo, colores azules y lema en blanco bajo el logo).
 // v57 (2026-10-08): menú en dos niveles por líneas de servicio (settings.lines): líneas → servicios de la línea → cotización.
 // v56 (2026-10-08): marca de la empresa — bienvenida configurable (settings.welcome_text) y emojis en la conversación (settings.use_emojis).
+// v61 (2026-10-15): propuesta sin adjunto (roadmap en línea vía botón) para que Gmail no la bloquee.
 // v59 (2026-10-15): envío idempotente por Gmail WIA (sin duplicados por respaldo).
 // v54 (2026-10-01): menú numerado fijo (campo n del catálogo) y correo al asesor con espera/reintentos y registro (advisor_email).
 // v53 (2026-10-01): identidad "SIERRA — Asistente Comercial Inteligente" y transcripción de notas de voz (action "transcribe").
@@ -1158,7 +1159,8 @@ async function actionAutoSendEmail(body: any, execId: string) {
   const mailHtml = renderEmail(ws, p.quote, p.roadmap || {}, viewUrl, bookUrl);
   // Adjunto: roadmap interactivo HTML autónomo, personalizado con los datos del cliente.
   let attachments: { filename: string; content: string; content_type: string }[] | undefined;
-  try {
+  // v61: Gmail bloquea adjuntos desde la cuenta de WIA; si hay enlace al roadmap en línea, no se adjunta.
+  if (!viewUrl) try {
     const rd = roadmapData(ws, p.quote, p.roadmap || {}, bookUrl);
     const html = await buildRoadmapAttachment(rd);
     attachments = [{ filename: `Roadmap_Interactivo_${safeFileName(String(rd?.client?.name || "Cliente"))}.html`, content: b64utf8(html), content_type: "application/octet-stream" }];
@@ -1220,7 +1222,8 @@ async function actionSendEmail(body: any, caller: Caller, execId: string) {
   const mailHtml = renderEmail(ws, p.quote, p.roadmap || {}, viewUrl);
   // Adjunto: roadmap interactivo HTML autónomo, personalizado con los datos del cliente.
   let attachments: { filename: string; content: string; content_type: string }[] | undefined;
-  try {
+  // v61: Gmail bloquea adjuntos desde la cuenta de WIA; si hay enlace al roadmap en línea, no se adjunta.
+  if (!viewUrl) try {
     const rd = roadmapData(ws, p.quote, p.roadmap || {});
     const html = await buildRoadmapAttachment(rd);
     attachments = [{ filename: `Roadmap_Interactivo_${safeFileName(String(rd?.client?.name || "Cliente"))}.html`, content: b64utf8(html), content_type: "application/octet-stream" }];
