@@ -1,4 +1,5 @@
 // SIERRA — Asistente Comercial Inteligente: motor del agente (Supabase Edge Function "ci-agent")
+// v67 (2026-10-16): avisos de WhatsApp en cola si la ventana de 24 h está cerrada; se entregan al escribir activar.
 // v66 (2026-10-15): cierre por WhatsApp (handoff.ts) — tras la cotización, invita a escribirle al asesor por WhatsApp Business; settings.handoff.enabled.
 // v65 (2026-10-15): módulo de agendamiento (scheduling.ts) — horarios reales del asesor tras la cotización; se activa con settings.scheduling.enabled.
 // v58 (2026-10-15): marca WIA · Soluciones Inteligentes (remitente de correo, colores azules y lema en blanco bajo el logo).
@@ -533,7 +534,27 @@ async function actionChat(body: any, caller: Caller, execId: string) {
       const { data: fresh } = await admin.from("workspaces").select("settings").eq("id", ws).single();
       const st = fresh?.settings || {};
       await admin.from("workspaces").update({ settings: { ...st, advisor: { ...(st.advisor || {}), wa_window_at: nowIso } } }).eq("id", ws);
-      await audit(ws, "advisor_window", "workspace", null, { at: nowIso });
+      await audit(ws, "advisor_window", "workspace", null, { at: nowIso, pending: ((st.advisor || {}).wa_pending || []).length });
+      // v67: entrega los avisos que quedaron en cola mientras la ventana estaba cerrada.
+      const pendQ = ((st.advisor || {}).wa_pending || []) as { at: string; text: string }[];
+      if (pendQ.length) {
+        const job = (async () => {
+          const c = await waCreds();
+          if (!c) return;
+          await sleep(2500);
+          for (const it of pendQ) {
+            const when = new Date(it.at).toLocaleString("es-CO", { timeZone: "America/Bogota", dateStyle: "short", timeStyle: "short" });
+            await waPost(c, { to: advPhone, type: "text", text: { preview_url: false, body: `📬 Aviso pendiente (${when})\n\n${it.text}` } });
+          }
+          const { data: f2 } = await admin.from("workspaces").select("settings").eq("id", ws).single();
+          const s2 = f2?.settings || {};
+          await admin.from("workspaces").update({ settings: { ...s2, advisor: { ...(s2.advisor || {}), wa_pending: [] } } }).eq("id", ws);
+          await audit(ws, "advisor_whatsapp", "workspace", null, { ok: true, via: "pending_delivered", count: pendQ.length });
+        })().catch((e) => console.error("pending alerts", (e as Error)?.message));
+        // deno-lint-ignore no-explicit-any
+        const ERp = (globalThis as any).EdgeRuntime;
+        if (ERp?.waitUntil) ERp.waitUntil(job);
+      }
       // v65: respuestas del asesor a solicitudes de horario especial ("ACEPTO CITA-AB12", "PROPONGO CITA-AB12 jueves 3 pm").
       const cmd = await handleAdvisorCommand(wsRow, message).catch((e) => `No pude procesar tu respuesta (${(e as Error)?.message || e}).`);
       if (cmd) return { ok: true, execution_id: execId, conversation_id: null, lead: body.lead || {}, state: body.state || {}, reply: cmd };
@@ -1020,6 +1041,15 @@ async function waAdvisor(ws: any, p: any, lead: any, headline: string) {
     const r = await waPost(c0, { to: adv.whatsapp, type: "text", text: { preview_url: false, body: "🔥 " + text + "\n\n(Responde *OK* a este mensaje para mantener los avisos activos 24 h más.)" } });
     if (r.ok) { await audit(ws.id, "advisor_whatsapp", "proposal", p.id, { ok: true, via: "sierra_text", to: adv.whatsapp }); return; }
   }
+  // v67: ventana cerrada y sin pago en Meta → el aviso queda EN COLA y se entrega apenas el asesor le escriba a SIERRA.
+  if (a.wa_paid !== true) {
+    const { data: fresh } = await admin.from("workspaces").select("settings").eq("id", ws.id).single();
+    const st = fresh?.settings || {};
+    const pend = [...((st.advisor || {}).wa_pending || []), { at: new Date().toISOString(), text: "🔥 " + text }].slice(-20);
+    await admin.from("workspaces").update({ settings: { ...st, advisor: { ...(st.advisor || {}), wa_pending: pend } } }).eq("id", ws.id);
+    await audit(ws.id, "advisor_whatsapp", "proposal", p.id, { ok: false, via: "queued", reason: "ventana_24h_cerrada", pending: pend.length });
+    return;
+  }
   // 2) Respaldo gratuito: número de prueba de Meta → número autorizado (settings.advisor.wa_fallback).
   const fb = a.wa_fallback || null;
   if (fb?.phone_id && fb?.to) {
@@ -1093,7 +1123,12 @@ async function sendLeadCard(ws: any, p: any, lead: any, viewUrl: string | null) 
 <div style="font-size:12px;letter-spacing:2px;color:#8a94aa;margin-top:18px">CONVERSACIÓN CON SIERRA</div>${chat}
 <p style="font-size:12px;color:#8a94aa;margin-top:18px">Siguiente paso sugerido: contactar al cliente para agendar la reunión de cierre. Si toca "Agendar reunión" en su cotización o roadmap, te llegará una alerta.</p></div></div>`;
   try { await waAdvisor(ws, p, lead, "Nuevo prospecto, cotización enviada"); } catch (e) { console.error("waAdvisor", (e as Error)?.message); }
-  await mailAdvisor(ws, `Nuevo prospecto: ${lead.name || "Cliente"} — ${q.solucion || "cotización"} (${quoteCode(p.id)})`, html);
+  // v67: si la ventana de WhatsApp está cerrada, el correo trae el botón para reactivarla con un toque.
+  const sa = (ws.settings || {}).advisor || {};
+  const winOpen = sa.wa_window_at && Date.now() - Date.parse(sa.wa_window_at) < 23.5 * 3600 * 1000;
+  const botWa = String((ws.settings || {}).bot_whatsapp || "573113692698").replace(/\D/g, "");
+  const banner = (!winOpen && sa.whatsapp) ? `<div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto 12px;background:#fff7e6;border:1px solid #f5c26b;border-radius:12px;padding:14px 18px;color:#5c3d00;font-size:14px">⚠️ <b>El aviso por WhatsApp quedó en espera.</b> Meta solo deja que SIERRA te escriba gratis si le escribiste en las últimas 24 h. Toca el botón <b>desde el celular del WhatsApp Business</b> y te llegan todos los avisos pendientes:<br><br><a href="https://wa.me/${botWa}?text=activar" style="background:#25d366;color:#fff;text-decoration:none;padding:10px 18px;border-radius:999px;font-weight:700">✅ Activar avisos de WhatsApp</a></div>` : "";
+  await mailAdvisor(ws, `Nuevo prospecto: ${lead.name || "Cliente"} — ${q.solucion || "cotización"} (${quoteCode(p.id)})`, banner + html);
 }
 // Enlace "Agendar reunión": registra el interés, alerta al asesor y abre el chat humano con mensaje prellenado.
 async function handleBookingClick(token: string): Promise<Response> {
