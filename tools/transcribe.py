@@ -1,6 +1,6 @@
 from faster_whisper import WhisperModel
 import sys,subprocess,numpy as np
-raw=subprocess.run(['ffmpeg','-loglevel','error','-i',sys.argv[1],'-f','s16le','-ac','1','-ar','16000','-'],capture_output=True,check=True).stdout
+raw=open(sys.argv[1],'rb').read()
 audio=np.frombuffer(raw,np.int16).astype(np.float32)/32768.0
 m=WhisperModel("small",device="cpu",compute_type="int8")
 segs,_=m.transcribe(audio,language="es",vad_filter=True)
