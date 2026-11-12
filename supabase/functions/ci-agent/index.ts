@@ -796,6 +796,8 @@ async function actionChat(body: any, caller: Caller, execId: string) {
     out = fallbackTurn(message, state, lead, greeted, services || [], bundleInfo, String(company.name || ""), String(settings.welcome_text || ""), lines, [...recent].reverse().find((x) => x.role === "assistant")?.content || "");
     model = "fallback"; usage = null;
   }
+  // v68: algunos modelos devuelven saltos de línea escritos como texto ("\\n"): se convierten en saltos reales.
+  if (typeof out.reply === "string" && out.reply.includes("\\n")) out.reply = out.reply.replace(/\\n/g, "\n");
   // Naturalidad: el saludo solo va en el primer mensaje de la conversación.
   if (greeted && typeof out.reply === "string") {
     const stripped = out.reply.replace(/^\s*[¡!]?\s*(?:hola|buen[oa]s?(?:\s+(?:d[ií]as?|tardes?|noches?))?)(?:\s+(?:de\s+nuevo|otra\s+vez))?(?:\s*,?\s*[A-ZÁÉÍÓÚÑ][\wáéíóúñ]*)?\s*[!¡.,]+\s*/i, "");
