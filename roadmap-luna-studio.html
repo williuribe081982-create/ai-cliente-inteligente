@@ -452,8 +452,21 @@ const ui=()=>UI[L], sv=()=>S[svc][L], key=k=>`${S[svc].id}-${k}`;
 const ICON={photo:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="5" width="18" height="14" rx="3"/><circle cx="12" cy="12" r="3.5"/><path d="M8 5l1.5-2h5L16 5"/></svg>',video:'<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg>'};
 const kindOf=j=>j===0?"video":"photo";
 
+const IMG="/media/spa/";
+const PHOTOS={
+ day:[["spa_welcome","lounge","locker","drink"],["massage","massage_room","oils","towels"],["cleanse","facial_room","mask","serum"],["lunch","tea","juices","lounge"],["nail_studio","pedicure","color_bar","steam"]],
+ facial:[["prepare","reception","questionnaire","products"],["analysis","cleanse","exfoliation","facial_room"],["mask","steam","serum","facial_massage"],["glow","spf","home_routine","therapist"]],
+ massage:[["spa_welcome","reception","questionnaire","locker"],["oils","products","massage_room","therapist"],["massage","massage_room","towels","music"],["lounge","tea","lounge","home_routine"]],
+ cleanse:[["therapist","analysis","glow_before","products"],["mask","extractions","steam","spf"],["facial_massage","serum","cleanse","glow"],["glow","facial_room","glow","calendar"]],
+ laser:[["laser","analysis","cooling_gel","laser_device"],["laser","smooth_skin","cooling_gel","spf"],["calendar","smooth_skin","spf","calendar"],["smooth_skin","smooth_skin","smooth_skin","calendar"]],
+ nails:[["nail_studio","color_bar","nail_shapes","nails_final"],["pedicure","pedicure","scrub","foot_massage"],["manicure","cuticle","nail_shapes","hand_massage"],["nails_final","polish","drying","nails_final"]]};
+const BA={facial:["glow_before","glow"],cleanse:["glow_before","glow"],laser:["smooth_skin_before","smooth_skin"]};
+function preset(k){const id=S[svc].id;let mm=k.match(/-m(\d+)-(\d+)$/);
+ if(mm){const a=PHOTOS[id];const f=a&&a[+mm[1]]&&a[+mm[1]][+mm[2]];return f?IMG+f+".webp":null}
+ mm=k.match(/-ba-(before|after)$/);if(mm&&BA[id])return IMG+BA[id][mm[1]==="before"?0:1]+".webp";return null}
 function slot(k,kind,cap,cls){
-  const m=media[k],u=ui();
+  let m=media[k];const u=ui();
+  if(!m){const pf=preset(k);if(pf){m={type:"photo",url:pf};kind="photo"}}
   const base=`slot ${kind==="video"?"vid":""} ${cls}`;
   if(m) return `<div class="${base}"><span class="kind">${u[kind]}</span>${m.type==="video"?`<video src="${m.url}" autoplay muted loop playsinline></video>`:`<img src="${m.url}" alt="">`}<button class="swap" data-pick="${k}">${u.change}</button></div>`;
   return `<div class="${base}"><span class="kind">${u[kind]}</span><div class="ph"><span class="ic">${ICON[kind]}</span><span class="cap">${cap}</span><button class="add" data-pick="${k}">+ ${u.add} ${u[kind].toLowerCase()}</button></div></div>`;
