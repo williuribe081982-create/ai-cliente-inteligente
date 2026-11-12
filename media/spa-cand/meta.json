@@ -1,1 +1,50 @@
-[]
+[
+ {
+  "src": "burst",
+  "slug": "bath-bomb-near-tub",
+  "q": "spa",
+  "file": "media/spa-cand/b_spa_0.jpg"
+ },
+ {
+  "src": "burst",
+  "slug": "neon-spa-sign",
+  "q": "spa",
+  "file": "media/spa-cand/b_spa_1.jpg"
+ },
+ {
+  "src": "burst",
+  "slug": "eaton-center",
+  "q": "spa",
+  "file": "media/spa-cand/b_spa_2.jpg"
+ },
+ {
+  "src": "burst",
+  "slug": "woman-shopping-for-clothes",
+  "q": "spa",
+  "file": "media/spa-cand/b_spa_3.jpg"
+ },
+ {
+  "src": "burst",
+  "slug": "honest-eds-toronto",
+  "q": "spa",
+  "file": "media/spa-cand/b_spa_4.jpg"
+ },
+ {
+  "src": "burst",
+  "slug": "woman-looking-at-top-in-the-mirror",
+  "q": "spa",
+  "file": "media/spa-cand/b_spa_5.jpg"
+ },
+ {
+  "src": "burst",
+  "slug": "light-lines-through-shed-wall",
+  "q": "spa",
+  "file": "media/spa-cand/b_spa_6.jpg"
+ },
+ {
+  "src": "burst",
+  "slug": "classic-neon-open-sign",
+  "q": "spa",
+  "file": "media/spa-cand/b_spa_7.jpg"
+ }
+]
