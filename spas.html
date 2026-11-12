@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SIERRA for Spas · WIA</title>
+<meta name="description" content="Your AI assistant on WhatsApp that answers, books and confirms spa appointments 24/7.">
+<meta property="og:title" content="SIERRA for Spas — Book clients 24/7 on WhatsApp">
+<meta property="og:description" content="Your AI assistant answers, books and confirms appointments — even while your spa is closed.">
+<meta property="og:image" content="/media/video/poster-en.jpg">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Playfair+Display:wght@500;600&display=swap" rel="stylesheet">
+<style>
+:root{--ink:#0b1020;--navy:#0e1530;--card:#141c3a;--line:#25305a;--txt:#e9ecf7;--mut:#a7b0cf;--blue:#22a6ff;--blue2:#5fb3ff;--lav:#b79be6;--lav2:#efe6ff;--gold:#d9ad6c}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{background:var(--ink);color:var(--txt);font-family:Inter,system-ui,sans-serif;line-height:1.55;-webkit-font-smoothing:antialiased}
+a{color:inherit}
+.wrap{max-width:1080px;margin:0 auto;padding:0 20px}
+nav{position:sticky;top:0;z-index:20;background:rgba(11,16,32,.85);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+nav .wrap{display:flex;align-items:center;justify-content:space-between;height:64px}
+.brand{display:flex;align-items:center;gap:10px;font-weight:700;letter-spacing:.5px}
+.brand img{height:34px}
+.brand small{display:block;font-weight:500;font-size:11px;color:var(--mut);letter-spacing:2px}
+.lang{display:flex;gap:4px;background:var(--card);border:1px solid var(--line);border-radius:30px;padding:3px}
+.lang button{border:0;background:none;color:var(--mut);font:600 13px Inter;padding:6px 12px;border-radius:30px;cursor:pointer}
+.lang button.on{background:var(--blue);color:#fff}
+.hero{padding:64px 0 40px;background:radial-gradient(80% 60% at 85% 10%,rgba(183,155,230,.22),transparent 60%),radial-gradient(60% 50% at 10% 0%,rgba(34,166,255,.18),transparent 60%)}
+.hero .wrap{display:grid;grid-template-columns:1.1fr .9fr;gap:48px;align-items:center}
+.kicker{display:inline-block;font-size:12px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:var(--gold);border:1px solid rgba(217,173,108,.4);padding:6px 12px;border-radius:30px}
+h1{font-family:"Playfair Display",serif;font-weight:600;font-size:clamp(34px,5vw,54px);line-height:1.08;margin:18px 0 16px;letter-spacing:-.5px}
+h1 em{font-style:normal;color:var(--lav)}
+.lead{font-size:18px;color:var(--mut);max-width:540px}
+.ctas{display:flex;flex-wrap:wrap;gap:12px;margin-top:28px}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:14px 22px;border-radius:12px;font-weight:700;text-decoration:none;font-size:15px}
+.btn.p{background:var(--blue);color:#fff;box-shadow:0 10px 30px rgba(34,166,255,.3)}
+.btn.s{border:1px solid var(--line);background:var(--card)}
+.trust{display:flex;gap:22px;margin-top:28px;color:var(--mut);font-size:14px;flex-wrap:wrap}
+.trust b{color:var(--txt);display:block;font-size:22px}
+.video{position:relative;border-radius:28px;overflow:hidden;background:#000;box-shadow:0 30px 80px rgba(0,0,0,.5),0 0 0 1px var(--line);max-width:380px;margin-left:auto;aspect-ratio:9/16}
+.video video{width:100%;height:100%;display:block;object-fit:cover}
+section{padding:72px 0}
+.alt{background:var(--navy);border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+h2{font-family:"Playfair Display",serif;font-weight:600;font-size:clamp(28px,3.6vw,40px);line-height:1.15;margin-bottom:14px}
+.sub{color:var(--mut);max-width:640px;font-size:17px}
+.grid{display:grid;gap:18px;margin-top:36px}
+.g3{grid-template-columns:repeat(3,1fr)}.g4{grid-template-columns:repeat(4,1fr)}.g2{grid-template-columns:repeat(2,1fr)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:24px}
+.card .ic{width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:22px;background:rgba(183,155,230,.14);margin-bottom:14px}
+.card h3{font-size:17px;margin-bottom:6px}
+.card p{color:var(--mut);font-size:15px}
+.pain .card{border-left:3px solid var(--gold)}
+.steps{counter-reset:s}
+.steps .card{position:relative;padding-top:56px}
+.steps .card:before{counter-increment:s;content:"0" counter(s);position:absolute;top:20px;left:24px;font:700 13px Inter;letter-spacing:2px;color:var(--gold)}
+.price{display:grid;grid-template-columns:1.2fr .8fr;gap:18px;margin-top:36px}
+.pbox{background:linear-gradient(160deg,#1a2350,#121a3a);border:1px solid #33407a;border-radius:22px;padding:32px}
+.pbox .tag{font-size:12px;font-weight:700;letter-spacing:2px;color:var(--gold);text-transform:uppercase}
+.old{color:var(--mut);text-decoration:line-through;font-size:20px;margin-top:14px}
+.big{font-size:52px;font-weight:800;letter-spacing:-1px;line-height:1.1}
+.big small{font-size:16px;font-weight:500;color:var(--mut)}
+.pbox ul{list-style:none;margin-top:20px;display:grid;gap:10px}
+.pbox li{padding-left:28px;position:relative;color:#d6dcf3}
+.pbox li:before{content:"✓";position:absolute;left:0;color:var(--blue);font-weight:800}
+.trial{background:var(--card);border:1px dashed var(--lav);border-radius:22px;padding:28px}
+.trial .big{font-size:44px;color:var(--lav)}
+.note{color:var(--mut);font-size:13px;margin-top:14px}
+.faq details{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin-top:10px}
+.faq summary{font-weight:600;cursor:pointer;list-style:none}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary:after{content:"+";float:right;color:var(--blue);font-weight:700}
+.faq details[open] summary:after{content:"–"}
+.faq p{color:var(--mut);margin-top:10px}
+.founder{display:grid;grid-template-columns:auto 1fr;gap:24px;align-items:center}
+.founder .av{width:84px;height:84px;border-radius:50%;background:linear-gradient(135deg,var(--blue),var(--lav));display:flex;align-items:center;justify-content:center;font:800 28px Inter}
+.final{text-align:center;padding:84px 0;background:radial-gradient(60% 80% at 50% 0%,rgba(34,166,255,.2),transparent 70%)}
+.final .ctas{justify-content:center}
+footer{border-top:1px solid var(--line);padding:28px 0;color:var(--mut);font-size:13px}
+footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
+.demo-tag{display:inline-block;margin-top:10px;font-size:12px;color:var(--mut)}
+@media(max-width:860px){.hero .wrap,.price,.founder{grid-template-columns:1fr}.video{margin:0 auto}.g3,.g4,.g2{grid-template-columns:1fr}section{padding:56px 0}.hero{padding-top:40px}}
+</style></head>
+<body>
+<nav><div class="wrap">
+  <div class="brand"><img src="/brand/logo.png" alt="WIA"><div>SIERRA <small data-i="by">BY WIA · SOLUCIONES INTELIGENTES</small></div></div>
+  <div class="lang"><button data-l="en">EN</button><button data-l="es">ES</button></div>
+</div></nav>
+
+<header class="hero"><div class="wrap">
+  <div>
+    <span class="kicker" data-i="kick"></span>
+    <h1 data-i="h1"></h1>
+    <p class="lead" data-i="lead"></p>
+    <div class="ctas">
+      <a class="btn p" id="wa1" target="_blank" rel="noopener" data-i="cta1"></a>
+      <a class="btn s" href="#pricing" data-i="cta2"></a>
+    </div>
+    <div class="trust">
+      <div><b>24/7</b><span data-i="t1"></span></div>
+      <div><b>EN · ES</b><span data-i="t2"></span></div>
+      <div><b data-i="t3b"></b><span data-i="t3"></span></div>
+    </div>
+  </div>
+  <div>
+    <div class="video"><video id="vid" controls playsinline preload="metadata"></video></div>
+    <div style="text-align:center"><span class="demo-tag" data-i="demo"></span></div>
+  </div>
+</div></header>
+
+<section class="pain"><div class="wrap">
+  <h2 data-i="painH"></h2><p class="sub" data-i="painS"></p>
+  <div class="grid g3">
+    <div class="card"><h3 data-i="p1h"></h3><p data-i="p1"></p></div>
+    <div class="card"><h3 data-i="p2h"></h3><p data-i="p2"></p></div>
+    <div class="card"><h3 data-i="p3h"></h3><p data-i="p3"></p></div>
+  </div>
+</div></section>
+
+<section class="alt"><div class="wrap">
+  <h2 data-i="solH"></h2><p class="sub" data-i="solS"></p>
+  <div class="grid g4">
+    <div class="card"><div class="ic">💬</div><h3 data-i="f1h"></h3><p data-i="f1"></p></div>
+    <div class="card"><div class="ic">📅</div><h3 data-i="f2h"></h3><p data-i="f2"></p></div>
+    <div class="card"><div class="ic">✨</div><h3 data-i="f3h"></h3><p data-i="f3"></p></div>
+    <div class="card"><div class="ic">🔔</div><h3 data-i="f4h"></h3><p data-i="f4"></p></div>
+  </div>
+</div></section>
+
+<section><div class="wrap">
+  <h2 data-i="howH"></h2><p class="sub" data-i="howS"></p>
+  <div class="grid g3 steps">
+    <div class="card"><h3 data-i="s1h"></h3><p data-i="s1"></p></div>
+    <div class="card"><h3 data-i="s2h"></h3><p data-i="s2"></p></div>
+    <div class="card"><h3 data-i="s3h"></h3><p data-i="s3"></p></div>
+  </div>
+</div></section>
+
+<section class="alt" id="pricing"><div class="wrap">
+  <h2 data-i="prH"></h2><p class="sub" data-i="prS"></p>
+  <div class="price">
+    <div class="pbox">
+      <div class="tag" data-i="prTag"></div>
+      <div class="old">US$ 1,500</div>
+      <div class="big">US$ 1,050 <small data-i="once"></small></div>
+      <ul>
+        <li data-i="i1"></li><li data-i="i2"></li><li data-i="i3"></li><li data-i="i4"></li><li data-i="i5"></li><li data-i="i6"></li>
+      </ul>
+      <p class="note" data-i="monthly"></p>
+    </div>
+    <div class="trial">
+      <div class="tag" style="font-size:12px;font-weight:700;letter-spacing:2px;color:var(--lav);text-transform:uppercase" data-i="trTag"></div>
+      <div class="big">US$ 50</div>
+      <p style="color:#d6dcf3;margin-top:10px" data-i="tr1"></p>
+      <p class="note" data-i="tr2"></p>
+      <div class="ctas"><a class="btn p" id="wa2" target="_blank" rel="noopener" data-i="trCta"></a></div>
+    </div>
+  </div>
+</div></section>
+
+<section><div class="wrap">
+  <div class="founder">
+    <div class="av">W</div>
+    <div><h2 style="font-size:28px" data-i="whyH"></h2><p class="sub" data-i="why"></p></div>
+  </div>
+</div></section>
+
+<section class="alt faq"><div class="wrap">
+  <h2 data-i="faqH"></h2>
+  <details><summary data-i="q1"></summary><p data-i="a1"></p></details>
+  <details><summary data-i="q2"></summary><p data-i="a2"></p></details>
+  <details><summary data-i="q3"></summary><p data-i="a3"></p></details>
+  <details><summary data-i="q4"></summary><p data-i="a4"></p></details>
+  <details><summary data-i="q5"></summary><p data-i="a5"></p></details>
+</div></section>
+
+<section class="final"><div class="wrap">
+  <h2 data-i="finH"></h2><p class="sub" style="margin:0 auto" data-i="finS"></p>
+  <div class="ctas">
+    <a class="btn p" id="wa3" target="_blank" rel="noopener" data-i="cta1"></a>
+    <a class="btn s" href="mailto:wia.soluciones@gmail.com?subject=SIERRA%20for%20Spas" data-i="mail"></a>
+  </div>
+</div></section>
+
+<footer><div class="wrap">
+  <div>© 2026 WIA · Soluciones Inteligentes — <span data-i="tag"></span></div>
+  <div>wia.soluciones@gmail.com · <a href="https://wia-soluciones.pages.dev" target="_blank" rel="noopener">wia-soluciones.pages.dev</a></div>
+</div></footer>
+
+<script>
+const WA="573113681307";
+const T={
+en:{by:"BY WIA · SOLUCIONES INTELIGENTES",kick:"For spas in Miami",h1:"Your spa, <em>booking clients 24/7</em> on WhatsApp",
+lead:"SIERRA is an AI assistant with your spa’s name and brand. It answers every message in seconds, shows your services, offers real available times and books the appointment — even while you sleep.",
+cta1:"Book a 15-min demo",cta2:"See pricing",t1:"always answering",t2:"bilingual",t3b:"3–5 days",t3:"to go live",
+demo:"Demo: “Luna Spa” is a sample spa created to show SIERRA in action.",
+painH:"Every unanswered message is a lost booking",painS:"Clients write when it suits them — at night, on weekends, between meetings. If nobody answers fast, they book somewhere else.",
+p1h:"After-hours messages",p1:"Most beauty clients reach out outside business hours. By morning, the moment has passed.",
+p2h:"A busy front desk",p2:"Your team repeats the same answers all day: prices, services, availability — instead of caring for clients in the spa.",
+p3h:"Back-and-forth to book",p3:"“What time works?” — five messages later, the client is still not booked.",
+solH:"Meet SIERRA, your AI booking assistant",solS:"Built on WhatsApp — the app your clients already use. No apps to download, no forms to fill.",
+f1h:"Answers instantly",f1:"Welcomes each client, explains your services and prices, in English or Spanish.",
+f2h:"Books real appointments",f2:"Offers only the times your calendar has free and confirms in seconds.",
+f3h:"Personalized plan",f3:"Each client gets an interactive plan with an AI guide that explains every step and how to prepare.",
+f4h:"You’re always informed",f4:"You get every new booking instantly by WhatsApp and email.",
+howH:"How it works",howS:"We set everything up for you. Your team doesn’t need technical knowledge.",
+s1h:"We learn your spa",s1:"Services, prices, hours, policies and your brand voice.",
+s2h:"We set up your assistant",s2:"Your WhatsApp number, your name, your logo and your schedule rules.",
+s3h:"You start receiving bookings",s3:"SIERRA goes live in 3–5 days. We adjust anything you need.",
+prH:"Simple, clear investment",prS:"One-time setup with a launch discount for the first spas in Miami.",
+prTag:"Launch offer · 30% off",once:"one-time setup",
+i1:"AI assistant with your spa’s name and brand",i2:"WhatsApp setup with your business number",i3:"Your services, prices and hours loaded",i4:"Appointment booking with real availability",i5:"Personalized client plan with AI guide",i6:"Instant booking alerts (WhatsApp + email)",
+monthly:"A monthly service plan (hosting, AI, WhatsApp messaging and support) is quoted on the demo call, based on your volume.",
+trTag:"Try it first",tr1:"5-day trial with your real services. If you stay, the US$50 is credited to your setup.",
+tr2:"The trial fee covers the WhatsApp/Meta setup and is non-refundable if you decide not to continue.",trCta:"Start my trial",
+whyH:"Why WIA",why:"WIA designs AI systems with the discipline of architecture: structure first, then technology. Founded by William Hernández Uribe, architect with 20+ years managing projects — scope, time and cost under control.",
+faqH:"Questions",q1:"Will it use my spa’s name and logo?",a1:"Yes. Your clients only see your brand. The assistant can have the name you choose.",
+q2:"Does it work in English and Spanish?",a2:"Yes. It replies in the client’s language and never mixes them.",
+q3:"How does it know my availability?",a3:"We load your hours and service durations. It can also read your Google Calendar so it never offers a busy slot.",
+q4:"Can clients change or cancel through the assistant?",a4:"By default, changes go directly to your team, so you keep control of your schedule.",
+q5:"How long does setup take?",a5:"3 to 5 business days once we receive your information.",
+finH:"Let your spa book clients while you rest",finS:"See SIERRA live in a 15-minute call.",mail:"Email us",tag:"Business architecture with AI",
+wa:"Hi WIA! I saw SIERRA for Spas and I’d like a demo."},
+es:{by:"POR WIA · SOLUCIONES INTELIGENTES",kick:"Para spas en Miami",h1:"Tu spa, <em>agendando clientas 24/7</em> por WhatsApp",
+lead:"SIERRA es una asistente con inteligencia artificial con el nombre y la marca de tu spa. Responde cada mensaje en segundos, muestra tus servicios, ofrece horarios reales y agenda la cita — incluso mientras duermes.",
+cta1:"Agenda una demo de 15 min",cta2:"Ver inversión",t1:"siempre respondiendo",t2:"bilingüe",t3b:"3–5 días",t3:"para estar activa",
+demo:"Demo: “Luna Spa” es un spa de ejemplo creado para mostrar SIERRA funcionando.",
+painH:"Cada mensaje sin respuesta es una cita perdida",painS:"Las clientas escriben cuando pueden — de noche, los fines de semana, entre reuniones. Si nadie responde rápido, agendan en otro lugar.",
+p1h:"Mensajes fuera de horario",p1:"La mayoría de clientas de belleza escribe fuera del horario de atención. En la mañana, el momento ya pasó.",
+p2h:"Recepción saturada",p2:"Tu equipo repite las mismas respuestas todo el día: precios, servicios, disponibilidad — en lugar de atender a las clientas en el spa.",
+p3h:"Ida y vuelta para agendar",p3:"“¿Qué hora te sirve?” — cinco mensajes después, la clienta sigue sin cita.",
+solH:"Te presentamos SIERRA, tu asistente de citas con IA",solS:"Funciona en WhatsApp — la app que tus clientas ya usan. Sin descargar apps ni llenar formularios.",
+f1h:"Responde al instante",f1:"Saluda a cada clienta, explica tus servicios y precios, en inglés o español.",
+f2h:"Agenda citas reales",f2:"Ofrece solo los horarios libres de tu agenda y confirma en segundos.",
+f3h:"Plan personalizado",f3:"Cada clienta recibe un plan interactivo con una guía con IA que explica cada paso y cómo prepararse.",
+f4h:"Siempre estás informada",f4:"Recibes cada nueva cita al instante por WhatsApp y correo.",
+howH:"Cómo funciona",howS:"Nosotros configuramos todo. Tu equipo no necesita conocimientos técnicos.",
+s1h:"Conocemos tu spa",s1:"Servicios, precios, horarios, políticas y el tono de tu marca.",
+s2h:"Configuramos tu asistente",s2:"Tu número de WhatsApp, tu nombre, tu logo y tus reglas de agenda.",
+s3h:"Empiezas a recibir citas",s3:"SIERRA queda activa en 3–5 días. Ajustamos lo que necesites.",
+prH:"Inversión simple y clara",prS:"Implementación única con descuento de lanzamiento para los primeros spas en Miami.",
+prTag:"Oferta de lanzamiento · 30% off",once:"implementación única",
+i1:"Asistente con IA con el nombre y la marca de tu spa",i2:"Configuración de WhatsApp con tu número del negocio",i3:"Tus servicios, precios y horarios cargados",i4:"Agendamiento de citas con disponibilidad real",i5:"Plan personalizado para cada clienta con guía IA",i6:"Aviso inmediato de cada cita (WhatsApp + correo)",
+monthly:"El plan mensual de servicio (servidor, IA, mensajes de WhatsApp y soporte) se cotiza en la llamada de demo, según tu volumen.",
+trTag:"Pruébala primero",tr1:"Prueba de 5 días con tus servicios reales. Si te quedas, los US$50 se abonan a la implementación.",
+tr2:"El valor de la prueba cubre la configuración de WhatsApp/Meta y no es reembolsable si decides no continuar.",trCta:"Iniciar mi prueba",
+whyH:"Por qué WIA",why:"WIA diseña sistemas de IA con la disciplina de la arquitectura: primero la estructura, después la tecnología. Fundada por William Hernández Uribe, arquitecto con más de 20 años gestionando proyectos — alcance, tiempo y costo bajo control.",
+faqH:"Preguntas frecuentes",q1:"¿Usa el nombre y el logo de mi spa?",a1:"Sí. Tus clientas solo ven tu marca. La asistente puede llamarse como tú elijas.",
+q2:"¿Funciona en inglés y español?",a2:"Sí. Responde en el idioma de la clienta y nunca los mezcla.",
+q3:"¿Cómo sabe mi disponibilidad?",a3:"Cargamos tus horarios y la duración de cada servicio. También puede leer tu Google Calendar para nunca ofrecer un horario ocupado.",
+q4:"¿Las clientas pueden cambiar o cancelar con la asistente?",a4:"Por defecto, los cambios van directo a tu equipo, así mantienes el control de tu agenda.",
+q5:"¿Cuánto tarda la implementación?",a5:"De 3 a 5 días hábiles después de recibir tu información.",
+finH:"Deja que tu spa agende clientas mientras descansas",finS:"Mira SIERRA en vivo en una llamada de 15 minutos.",mail:"Escríbenos",tag:"Arquitectura empresarial con IA",
+wa:"¡Hola WIA! Vi SIERRA para spas y quiero una demo."}};
+let L=(new URLSearchParams(location.search).get("lang")||(location.pathname.endsWith("/es")?"es":"en"));
+function apply(l){L=T[l]?l:"en";const t=T[L];document.documentElement.lang=L;
+ document.querySelectorAll("[data-i]").forEach(e=>{const v=t[e.dataset.i];if(v!==undefined)e.innerHTML=v});
+ document.querySelectorAll(".lang button").forEach(b=>b.classList.toggle("on",b.dataset.l===L));
+ const wa="https://wa.me/"+WA+"?text="+encodeURIComponent(t.wa);["wa1","wa2","wa3"].forEach(id=>document.getElementById(id).href=wa);
+ const v=document.getElementById("vid");const src="/media/video/sierra-spas-"+L+".mp4";if(v.getAttribute("src")!==src){v.src=src;v.poster="/media/video/poster-"+L+".jpg";}
+ document.title=L==="es"?"SIERRA para Spas · WIA":"SIERRA for Spas · WIA";}
+document.querySelectorAll(".lang button").forEach(b=>b.onclick=()=>{apply(b.dataset.l);try{history.replaceState(null,"","?lang="+L)}catch(e){}});
+apply(L);
+</script>
+</body></html>

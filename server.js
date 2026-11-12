@@ -175,6 +175,7 @@ app.get("/r/:id",async(req,res)=>{
 
 // Logo de marca usado en correos y roadmap.
 app.use("/media",express.static(path.join(__dirname,"media"),{maxAge:"7d"}));
+app.get(["/spas","/spas/es"],(_req,res)=>res.set("Cache-Control","public, max-age=600").sendFile(path.join(__dirname,"spas.html")));
 app.get("/brand/logo.png",(_req,res)=>res.set("Cache-Control","public, max-age=604800").sendFile(path.join(__dirname,"logo.png")));
 
 // AI BUSINESS ARCHITECT — workspace interno de chats
