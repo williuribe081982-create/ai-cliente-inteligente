@@ -1,0 +1,13 @@
+name: transcribe
+on: workflow_dispatch
+permissions:
+  contents: write
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install faster-whisper && python tools/transcribe.py media/sierra_wia.mp4 media/vo/sierra_wia_transcript.txt && cat media/vo/sierra_wia_transcript.txt
+      - run: |
+          git config user.name "wia-bot"; git config user.email "bot@users.noreply.github.com"
+          git add media/vo/sierra_wia_transcript.txt && git commit -m "transcript" && git pull --rebase && git push
