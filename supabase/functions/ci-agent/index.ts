@@ -1,4 +1,5 @@
 // SIERRA — Asistente Comercial Inteligente: motor del agente (Supabase Edge Function "ci-agent")
+// v70 (2026-11-12): un saludo inicia conversación nueva si pasaron más de settings.resume_minutes (10 min por defecto; antes 2 h).
 // v69 (2026-11-12): marca por espacio (correo "spa" bilingüe, remitente, roadmap propio), idioma fijo por conversación (settings.lang_mode=auto),
 //   ventana de avisos del asesor compartida entre espacios con el mismo WhatsApp y etiqueta del negocio en los avisos.
 // v68 (2026-11-12): agendamiento modo "service" (spa): horarios al elegir el servicio, bilingüe, duración por servicio (scheduling.ts).
@@ -613,8 +614,8 @@ async function actionChat(body: any, caller: Caller, execId: string) {
   let conv: any = null;
   if (body.new_conversation === true) {
     // El canal pide una conversación nueva (p. ej. porque el mensaje empieza con "Hola").
-    // Si la conversación de este teléfono sigue en curso (actividad < 2 h, sin cotización enviada), se continúa
-    // para no volver a saludar ni perder el hilo; si no, se inicia una nueva sin arrastrar datos anteriores.
+    // v70: si el cliente escribió hace menos de settings.resume_minutes (por defecto 10 min) y no hay cotización,
+    // se continúa la misma conversación; pasado ese tiempo, un saludo inicia una conversación nueva desde cero.
     conv = null;
     const phone0 = clean(body.lead?.phone);
     if (phone0) {
@@ -625,7 +626,8 @@ async function actionChat(body: any, caller: Caller, execId: string) {
         if (last && last.status !== "sent") {
           const { data: lm } = await admin.from("messages").select("created_at").eq("conversation_id", last.id).order("created_at", { ascending: false }).limit(1).maybeSingle();
           const { count: pc } = await admin.from("proposals").select("id", { count: "exact", head: true }).eq("conversation_id", last.id);
-          if (lm && Date.now() - new Date(lm.created_at).getTime() < 2 * 3600 * 1000 && !(pc || 0)) { conv = last; body.new_conversation = false; }
+          const resumeMs = Math.max(0, Number((wsRow.settings || {}).resume_minutes ?? 10)) * 60000;
+          if (lm && Date.now() - new Date(lm.created_at).getTime() < resumeMs && !(pc || 0)) { conv = last; body.new_conversation = false; }
         }
       }
     }
@@ -712,7 +714,7 @@ async function actionChat(body: any, caller: Caller, execId: string) {
   let freshByGreeting = false;
   if (conv && body.new_conversation !== true && isGreeting(message)) {
     const { data: lastMsg } = await admin.from("messages").select("created_at").eq("conversation_id", conv.id).order("created_at", { ascending: false }).limit(1).maybeSingle();
-    const idle = !lastMsg || Date.now() - new Date(lastMsg.created_at).getTime() > 2 * 3600 * 1000;
+    const idle = !lastMsg || Date.now() - new Date(lastMsg.created_at).getTime() > Math.max(0, Number((wsRow.settings || {}).resume_minutes ?? 10)) * 60000; // v70
     const { count: propCount } = await admin.from("proposals").select("id", { count: "exact", head: true }).eq("conversation_id", conv.id);
     if (idle || (propCount || 0) > 0 || conv.status === "sent") { conv = null; freshByGreeting = true; }
   }
