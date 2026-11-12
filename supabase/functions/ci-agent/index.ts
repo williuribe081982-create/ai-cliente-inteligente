@@ -247,7 +247,7 @@ function linePickNote(lines: any[], lastAssistant: string, n: number): string | 
 // v68: reglas extra para negocios que agendan citas (settings.scheduling.mode = "service").
 const BOOKING_RULES = `
 
-MODO CITAS (este negocio agenda citas por este chat)
+MODO CITAS (este negocio agenda citas por este chat). ESTAS REGLAS PREVALECEN sobre el FLUJO COMERCIAL OBLIGATORIO cuando haya conflicto
 1. En el paso (B), después de explicar el servicio NO ofrezcas la cotización formal ni hagas preguntas de cierre: el sistema agrega automáticamente, debajo de tu mensaje, los horarios disponibles para agendar. Termina con la explicación del servicio.
 2. Nunca inventes horarios, fechas ni disponibilidad, y nunca confirmes una cita: eso lo hace el sistema.
 3. Si ESTADO.scheduling.step es "confirmed" (la cita ya quedó agendada) y el cliente envía su nombre y su correo, eso significa que acepta recibir su plan y la confirmación por correo: guarda lead.name y lead.email tal como los escribió, mantén service_match.service_id del servicio, marca advance_confirmed=true y ready_for_proposal=true, y responde que en un par de minutos recibirá su plan personalizado en el correo.
@@ -846,7 +846,12 @@ async function actionChat(body: any, caller: Caller, execId: string) {
     try {
       const lang = sc0.lang === "auto" ? detectLang(recent.filter((m) => m.role === "user").slice(-3).map((m) => m.content)) : sc0.lang;
       const of = await offerForService(wsRow, { ...conv, state: newState }, lead.id, svc.id, svc.name, lang);
-      if (of) { out.reply = `${out.reply.trim()}\n\n${of.text}`; (newState as any).scheduling = of.sched; }
+      if (of) {
+        // la oferta de horarios reemplaza el cierre "¿te envío la cotización?" que a veces agrega la IA
+        const paras = out.reply.trim().split(/\n\s*\n/);
+        while (paras.length > 1 && /cotizaci|presupuesto|propuesta|roadmap|\bquote\b|proposal|estimate/i.test(paras[paras.length - 1]) && /[?¿]/.test(paras[paras.length - 1])) paras.pop();
+        out.reply = `${paras.join("\n\n")}\n\n${of.text}`; (newState as any).scheduling = of.sched;
+      }
     } catch (e) { await logError(ws, execId, "GL-CI-03", "SCHED_OFFER", (e as Error)?.message || String(e), { conversation_id: conv.id }); }
   }
 
