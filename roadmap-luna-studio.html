@@ -318,7 +318,7 @@ const UI={
   chips:[["leer","How do I read this plan?"],["pasos","Walk me through the steps"],["tu","What do I need to do?"],["inversion","How much is it?"],["empezar","How do I book?"]],
   leer:"Read it at your own pace: on the left are the steps; tap any of them to see its video, photos and details. On the right is your checklist and your investment.",
   tu:(s)=>"Your checklist on the right shows what you need to do in each step. In short: "+s.steps.map((x,i)=>`in step ${i+1}, ${x.p.join(", ").toLowerCase()}`).join("; ")+".",
-  inv:(s,p)=>`Your investment is ${p} dollars plus tax, and this quote is valid for fifteen days.`,
+  invSay:(s,p)=>`Your investment is ${p} dollars plus tax, and this quote is valid for fifteen days.`,
   emp:"To start, tap Book now and we'll confirm your appointment on WhatsApp. If you want to hear something again, use my buttons.",
   intro:(s)=>`Hi${FIRST?" "+FIRST:""}, I'm Aurora from Luna Spa, and I'll be your guide in this plan for the ${s.name}. ${s.desc} On the left you have ${s.steps.length} steps. Let me show you each one.`,
   stepTxt:(s,i,x)=>`Step ${i+1}, ${x.w}: ${x.t}. ${x.d} Your part: ${x.p.join(". ")}.`,
@@ -334,7 +334,7 @@ const UI={
   chips:[["leer","¿Cómo leo este plan?"],["pasos","Explícame el paso a paso"],["tu","¿Qué necesito hacer?"],["inversion","¿Cuánto invierto?"],["empezar","¿Cómo agendo?"]],
   leer:"Puedes recorrerlo a tu ritmo: a la izquierda están los pasos; toca cualquiera para ver su video, fotos y detalle. A la derecha está tu lista y tu inversión.",
   tu:(s)=>"Tu lista, a la derecha, muestra lo que necesitas hacer en cada paso. En resumen: "+s.steps.map((x,i)=>`en el paso ${i+1}, ${x.p.join(", ").toLowerCase()}`).join("; ")+".",
-  inv:(s,p)=>`Tu inversión es de ${p} dólares más impuestos, y esta cotización es válida por quince días.`,
+  invSay:(s,p)=>`Tu inversión es de ${p} dólares más impuestos, y esta cotización es válida por quince días.`,
   emp:"Para empezar, toca Agendar ahora y confirmamos tu cita por WhatsApp. Si quieres escuchar algo de nuevo, usa mis botones.",
   intro:(s)=>`Hola${FIRST?" "+FIRST:""}, soy Aurora, de Luna Spa, y voy a ser tu guía en este plan de ${s.name}. ${s.desc} A la izquierda tienes ${s.steps.length} pasos. Te muestro cada uno.`,
   stepTxt:(s,i,x)=>`Paso ${i+1}, ${x.w}: ${x.t}. ${x.d} Tu parte: ${x.p.join(". ")}.`,
@@ -580,7 +580,7 @@ function scripts(key){
  const s=sv(),u=ui(),p=S[svc].price;
  const stepsSeq=s.steps.map((x,i)=>[()=>{speakingStep=i;go(i);goSpot("steps")},u.stepTxt(s,i,x)]);
  const intro=[()=>{window.scrollTo({top:0,behavior:"smooth"});light(null)},u.intro(s)];
- const inv=[()=>{speakingStep=-1;render();goSpot("buy")},u.inv(s,p)];
+ const inv=[()=>{speakingStep=-1;render();goSpot("buy")},u.invSay(s,p)];
  const emp=[()=>goSpot("buy"),u.emp];
  return {full:[intro,...stepsSeq,inv,emp],leer:[[()=>goSpot("steps"),u.leer]],pasos:stepsSeq,tu:[[()=>goSpot("check"),u.tu(s)]],inversion:[inv],empezar:[emp]}[key];
 }
