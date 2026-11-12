@@ -484,8 +484,14 @@ function render(){
   if(LIVE&&DATA.appointment){
     const d=new Date(DATA.appointment.start);
     const when=new Intl.DateTimeFormat(L==="en"?"en-US":"es-CO",{timeZone:DATA.appointment.tz||"America/New_York",weekday:"long",month:"long",day:"numeric",hour:"numeric",minute:"2-digit"}).format(d);
-    $("#book").textContent=(L==="en"?"Change my appointment":"Cambiar mi cita")+" →";
-    $("#book").href=`https://wa.me/${bot}?text=`+encodeURIComponent(L==="en"?"Hi! I'd like to change my appointment.":"¡Hola! Quiero cambiar mi cita.");
+    if(DATA.allow_changes===false){
+      const cw=DATA.contact_whatsapp||bot;
+      $("#book").textContent=(L==="en"?"Contact the spa":"Contactar al spa")+" →";
+      $("#book").href=`https://wa.me/${cw}?text=`+encodeURIComponent(L==="en"?"Hi! I have a question about my appointment.":"¡Hola! Tengo una consulta sobre mi cita.");
+    } else {
+      $("#book").textContent=(L==="en"?"Change my appointment":"Cambiar mi cita")+" →";
+      $("#book").href=`https://wa.me/${bot}?text=`+encodeURIComponent(L==="en"?"Hi! I'd like to change my appointment.":"¡Hola! Quiero cambiar mi cita.");
+    }
     $(".buy p").textContent=(L==="en"?"📅 Your appointment: ":"📅 Tu cita: ")+when;
   } else {
     $("#book").textContent=u.book+" →"; $("#book").href=`https://wa.me/${bot}?text=`+encodeURIComponent(u.bookMsg(s));

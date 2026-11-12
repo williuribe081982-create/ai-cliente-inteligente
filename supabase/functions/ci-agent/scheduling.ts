@@ -46,7 +46,7 @@ export type SchedCfg = {
   advisors: Advisor[]; emojis: boolean; company: string; bot_whatsapp: string;
   mode: "after_quote" | "service"; kind: "meeting" | "appointment"; lang: "es" | "en" | "auto";
   tz_label: { es: string; en: string }; service_minutes: Record<string, number>; grid_minutes: number;
-  min_notice_minutes: number; wa_phone_id: string | null; service_names: Record<string, { es?: string; en?: string }>;
+  min_notice_minutes: number; wa_phone_id: string | null; allow_changes: boolean; contact_whatsapp: string; service_names: Record<string, { es?: string; en?: string }>;
 };
 export type Lang = "es" | "en";
 export function schedCfg(ws: any): SchedCfg | null {
@@ -98,6 +98,9 @@ export function schedCfg(ws: any): SchedCfg | null {
     min_notice_minutes: Number(c.min_notice_minutes) > 0 ? Number(c.min_notice_minutes) : 0,
     wa_phone_id: c.wa_phone_id ? String(c.wa_phone_id) : null,
     service_names: c.service_names && typeof c.service_names === "object" ? c.service_names : {},
+    // v73: false = la clienta no cambia ni cancela por el chat; se le indica contactar al negocio directamente
+    allow_changes: c.allow_changes !== false,
+    contact_whatsapp: String(c.contact_whatsapp || a0.whatsapp || "").replace(/\D/g, ""),
   };
 }
 
@@ -474,6 +477,9 @@ function W(c: SchedCfg, lang: Lang) {
     whyTaken: en ? "That time was just taken." : "Ese horario acaba de ocuparse.",
     nowAvail: en ? "These are the times available now:" : "Estos son los espacios disponibles ahora:",
     told: en ? (ap ? "I let our team know so they can contact you and set a time." : "I let the advisor know so they can contact you and agree on a time.") : (ap ? "Ya le avisé a nuestro equipo para que te contacte y acuerden la hora." : "Ya le avisé al asesor para que te contacte y acuerden la hora."),
+    contactChange: (when: string, link: string) => en
+      ? `Your appointment is booked for *${when}*. To change or cancel it, please contact the spa directly${link ? ` on WhatsApp: ${link}` : "."}`
+      : `Tu cita está agendada para el *${when}*. Para cambiarla o cancelarla, comunícate directamente con el spa${link ? ` por WhatsApp: ${link}` : "."}`,
     already: (when: string, meet: string) => en ? `You already have ${art} ${n} booked for *${when}*${meet}. Want to change it? Write *change* or *cancel*.` : `Ya tienes tu ${n} agendada para el *${when}*${meet}. ¿Quieres cambiarla? Escríbeme *cambiar* o *cancelar*.`,
     cancelled: (when: string) => en ? `Done, I cancelled your ${n} on ${when} 👍\nWhenever you want to book again, just write ${kw}.` : `Listo, cancelé tu ${n} del ${when} 👍\nCuando quieras agendar otra, escríbeme ${kw}.`,
     retake: en ? `Got it. Whenever you want, write ${kw} and we'll find another time.` : `Entendido. Cuando quieras retomar, escríbeme ${kw} y buscamos otro horario.`,
@@ -666,10 +672,12 @@ function confirmText(c: SchedCfg, appt: any, lead: any, lang: Lang = "es", svcNa
   const head = en ? "Your appointment is confirmed!" : "¡Tu cita quedó confirmada!";
   const svc = svcName ? `${e ? "💆 " : ""}${svcName}\n` : "";
   const plan = planUrl ? (en ? `\n\n${e ? "✨ " : ""}*Your personalized plan with Aurora* (every step and how to prepare):\n${planUrl}` : `\n\n${e ? "✨ " : ""}*Tu plan personalizado con Aurora* (cada paso y cómo prepararte):\n${planUrl}`) : "";
-  const tail = lead?.email
+  const tail = !c.allow_changes
+    ? (lead?.email ? "" : (en ? "If you'd also like the confirmation by email, send me your full name and email." : "Si también quieres la confirmación por correo, envíame tu nombre completo y tu correo."))
+    : lead?.email
     ? (en ? "If you need to change it, just write me here." : "Si necesitas cambiarla, escríbeme por aquí.")
     : (en ? "If you'd also like the confirmation by email, send me your full name and email. If you need to change the appointment, write me here." : "Si también quieres la confirmación por correo, envíame tu nombre completo y tu correo. Si necesitas cambiar la cita, escríbeme por aquí.");
-  return `${e ? "✅ " : ""}${head}\n${svc}${e ? "📅 " : ""}${fmtDayCap(d, c.timezone, lang)}, ${fmtTime(d, c.timezone, lang)} (${c.tz_label[lang]}, ${fmtDur(mins)})\n${where}${mail}${plan}\n\n${tail}`;
+  return `${e ? "✅ " : ""}${head}\n${svc}${e ? "📅 " : ""}${fmtDayCap(d, c.timezone, lang)}, ${fmtTime(d, c.timezone, lang)} (${c.tz_label[lang]}, ${fmtDur(mins)})\n${where}${mail}${plan}${tail ? `\n\n${tail}` : ""}`;
 }
 async function notifyAdvisorBooked(wsRow: any, c: SchedCfg, ctx: any, appt: any) {
   if (c.dry_run) { await D.audit(wsRow.id, "sched_advisor_dry_run", "appointment", appt.id, { kind: "booked" }); return; }
@@ -890,6 +898,8 @@ export async function handleTurn(wsRow: any, phone: string, message: string): Pr
   try {
     // ---- cita existente: cambiar / cancelar
     if (appt && appt.status === "confirmed" && (cancel || resch || (kw && !active))) {
+      // v73: cambios solo directamente con el negocio
+      if (!c.allow_changes) return await reply(w.contactChange(fF(new Date(appt.starts_at)), c.contact_whatsapp ? `https://wa.me/${c.contact_whatsapp}` : ""), null, { change_blocked: true });
       if (!cancel && !resch) {
         const d = new Date(appt.starts_at);
         return await reply(w.already(fF(d), appt.meet_url ? ` (Meet: ${appt.meet_url})` : ""), null);

@@ -1,4 +1,5 @@
 // SIERRA — Asistente Comercial Inteligente: motor del agente (Supabase Edge Function "ci-agent")
+// v73 (2026-11-12): settings.scheduling.allow_changes=false → cambios/cancelaciones solo con el negocio (contact_whatsapp).
 // v72 (2026-11-12): roadmap de la cita sin cotización (action "appt_view", enlace /r/{cita} en la confirmación).
 // v71 (2026-11-12): velocidad — tope de 20 s para la IA (antes 45 s), modelos en paralelo, modelos saturados se saltan 2 min;
 //   bienvenida instantánea por idioma (settings.welcome_text_en / welcome_text_es).
@@ -1334,7 +1335,7 @@ async function actionView(body: { token?: string }) {
   const tpl = (ws.settings || {}).roadmap_template || null;
   if (tpl) {
     const ap = await nextApptOf(ws, p.lead_id);
-    Object.assign(data, { template: tpl, service_id: p.service_id || null, lang: await convLangOf(p.conversation_id), client_name: p.quote?.cliente?.nombre || null, price: p.quote?.inversion?.display || null, appointment: ap ? { start: ap.starts_at, end: ap.ends_at, location: ap.location, tz: (ws.settings || {}).scheduling?.timezone || null } : null, bot_whatsapp: String((ws.settings || {}).scheduling?.bot_whatsapp || "").replace(/\D/g, "") || null });
+    Object.assign(data, { template: tpl, service_id: p.service_id || null, lang: await convLangOf(p.conversation_id), client_name: p.quote?.cliente?.nombre || null, price: p.quote?.inversion?.display || null, appointment: ap ? { start: ap.starts_at, end: ap.ends_at, location: ap.location, tz: (ws.settings || {}).scheduling?.timezone || null } : null, bot_whatsapp: String((ws.settings || {}).scheduling?.bot_whatsapp || "").replace(/\D/g, "") || null, allow_changes: (ws.settings || {}).scheduling?.allow_changes !== false, contact_whatsapp: String((ws.settings || {}).scheduling?.contact_whatsapp || (ws.settings || {}).advisor?.whatsapp || "").replace(/\D/g, "") || null });
   }
   return { ok: true, html: renderHtml(ws, p.quote, p.roadmap || {}, false, bookUrl), data };
 }
@@ -1357,7 +1358,8 @@ async function actionApptView(body: any) {
   const price = pr.amount ? `${(pr.currency || s.currency) === "USD" ? "US$" : (pr.currency || "")} ${Number(pr.amount).toLocaleString("en-US")}`.trim() : null;
   await audit(ap.workspace_id, "appointment_plan_viewed", "appointment", ap.id, {});
   return { ok: true, data: { template: s.roadmap_template, service_id: svcId, lang: await convLangOf(ap.conversation_id), client_name: lead?.name || null, price,
-    appointment: { start: ap.starts_at, end: ap.ends_at, location: ap.location, tz: s.scheduling?.timezone || null }, bot_whatsapp: String(s.scheduling?.bot_whatsapp || "").replace(/\D/g, "") || null } };
+    appointment: { start: ap.starts_at, end: ap.ends_at, location: ap.location, tz: s.scheduling?.timezone || null }, bot_whatsapp: String(s.scheduling?.bot_whatsapp || "").replace(/\D/g, "") || null,
+    allow_changes: s.scheduling?.allow_changes !== false, contact_whatsapp: String(s.scheduling?.contact_whatsapp || s.advisor?.whatsapp || "").replace(/\D/g, "") || null } };
 }
 // Envío automático: autorización de un solo uso ligada al lead/propuesta de esta conversación.
 async function actionAutoSendEmail(body: any, execId: string) {
