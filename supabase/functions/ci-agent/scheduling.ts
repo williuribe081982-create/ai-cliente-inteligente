@@ -770,7 +770,7 @@ export async function offerAfterQuote(wsRow: any, proposalId: string, delayMs: n
     const { data: ex } = await D.admin.from("appointments").select("id").eq("workspace_id", wsRow.id).eq("lead_id", p.lead_id).in("status", ACTIVE).gte("ends_at", new Date().toISOString()).limit(1).maybeSingle();
     if (ex) return;
   }
-  const lang = await convLang(c, p.conversation_id, sched0);
+  const lang = await convLang(c, p.conversation_id, { ...sched0, lang: sched0.lang || conv0?.state?.lang });
   const svcId = (p as any).service_id || conv0?.state?.chosen_service_id || null;
   const mins = c.mode === "service" ? (sched0.minutes || (svcId ? c.service_minutes[svcId] : null)) : null;
   const cc = withMinutes(c, mins);
@@ -841,7 +841,7 @@ export async function handleTurn(wsRow: any, phone: string, message: string): Pr
 
   const ws = wsRow.id, convId = ctx.proposal.conversation_id, e = c.emojis, tz = c.timezone;
   const t0 = Date.now();
-  const L: Lang = await convLang(c, null, sched, message);
+  const L: Lang = await convLang(c, null, { ...sched, lang: sched.lang || ctx.conv?.state?.lang }, message);
   const w = W(c, L);
   const svcName = c.mode === "service" ? (sched.service_name || ctx.proposal.quote?.solucion || null) : null;
   const keep = { lang: L, minutes: sched.minutes, service_id: sched.service_id, service_name: sched.service_name };
@@ -1031,7 +1031,7 @@ async function ctxForAppt(ap: any) {
   const { data: lead } = await D.admin.from("leads").select("*").eq("id", p.lead_id).single();
   return { proposal: p, lead, conv: await loadConv(p.conversation_id), appt: ap };
 }
-const ctxLang = (c: SchedCfg, ctx: any): Lang => (c.lang === "en" ? "en" : c.lang === "auto" && ctx?.conv?.state?.scheduling?.lang === "en" ? "en" : "es");
+const ctxLang = (c: SchedCfg, ctx: any): Lang => (c.lang === "en" ? "en" : c.lang === "auto" && (ctx?.conv?.state?.scheduling?.lang || ctx?.conv?.state?.lang) === "en" ? "en" : "es");
 const ctxKeep = (ctx: any) => { const s = ctx?.conv?.state?.scheduling || {}; return { lang: s.lang, minutes: s.minutes, service_id: s.service_id, service_name: s.service_name }; };
 async function advisorAccept(wsRow: any, c: SchedCfg, ap: any): Promise<string> {
   const ctx = await ctxForAppt(ap);

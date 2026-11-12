@@ -1,4 +1,6 @@
 // SIERRA — Asistente Comercial Inteligente: motor del agente (Supabase Edge Function "ci-agent")
+// v69 (2026-11-12): marca por espacio (correo "spa" bilingüe, remitente, roadmap propio), idioma fijo por conversación (settings.lang_mode=auto),
+//   ventana de avisos del asesor compartida entre espacios con el mismo WhatsApp y etiqueta del negocio en los avisos.
 // v68 (2026-11-12): agendamiento modo "service" (spa): horarios al elegir el servicio, bilingüe, duración por servicio (scheduling.ts).
 // v67 (2026-10-16): avisos de WhatsApp en cola si la ventana de 24 h está cerrada; se entregan al escribir activar.
 // v66 (2026-10-15): cierre por WhatsApp (handoff.ts) — tras la cotización, invita a escribirle al asesor por WhatsApp Business; settings.handoff.enabled.
@@ -63,7 +65,7 @@ async function sendEmail(init: { method: string; headers: Record<string, string>
     const key = crypto.randomUUID();
     const payload = {
       secret: rkey, key, to: Array.isArray(b.to) ? b.to : [b.to], subject: b.subject, html: b.html,
-      reply_to: b.reply_to || "wia.soluciones@gmail.com", from_name: "WIA Soluciones Inteligentes",
+      reply_to: b.reply_to || "wia.soluciones@gmail.com", from_name: (String(b.from || "").match(/^\s*"?([^"<]+?)"?\s*</)?.[1]) || "WIA Soluciones Inteligentes",
       // deno-lint-ignore no-explicit-any
       attachments: (b.attachments || []).map((a: any) => ({ filename: a.filename, content: a.content, content_type: a.content_type })),
     };
@@ -244,6 +246,10 @@ function linePickNote(lines: any[], lastAssistant: string, n: number): string | 
     : `el cliente eligió la línea ${l.n} "${l.name}". Aplica el paso (A1): muéstrale los servicios de esa línea.`;
 }
 
+// v69: idioma fijo de la conversación.
+const langRule = (l: string) => `
+
+IDIOMA FIJO DE ESTA CONVERSACIÓN: ${l === "en" ? "INGLÉS (English)" : "ESPAÑOL"}. Escribe TODA tu respuesta SOLO en ese idioma, aunque el cliente escriba algún mensaje en otro idioma o mezcle idiomas. Esto incluye saludos, menús, nombres de los servicios (tradúcelos si hace falta), confirmaciones y la petición de nombre y correo. Nunca mezcles idiomas en un mismo mensaje.`;
 // v68: reglas extra para negocios que agendan citas (settings.scheduling.mode = "service").
 const BOOKING_RULES = `
 
@@ -566,6 +572,29 @@ async function actionChat(body: any, caller: Caller, execId: string) {
         const ERp = (globalThis as any).EdgeRuntime;
         if (ERp?.waitUntil) ERp.waitUntil(job);
       }
+      // v69: el mismo WhatsApp puede ser asesor de varios espacios (p. ej. WIA y la demo Luna Spa): se abre su ventana
+      // en todos y se entregan sus avisos en cola.
+      {
+        const others = async () => {
+          const { data: all } = await admin.from("workspaces").select("id,settings").neq("id", ws);
+          const c = await waCreds();
+          for (const w of all || []) {
+            const a2 = (w.settings || {}).advisor || {};
+            if (String(a2.whatsapp || "").replace(/\D/g, "") !== advPhone) continue;
+            const pend2 = (a2.wa_pending || []) as { at: string; text: string }[];
+            await admin.from("workspaces").update({ settings: { ...w.settings, advisor: { ...a2, wa_window_at: nowIso, wa_pending: [] } } }).eq("id", w.id);
+            if (c) for (const it of pend2) {
+              const when = new Date(it.at).toLocaleString("es-CO", { timeZone: "America/Bogota", dateStyle: "short", timeStyle: "short" });
+              await waPost(c, { to: advPhone, type: "text", text: { preview_url: false, body: `📬 Aviso pendiente (${when})\n\n${it.text}` } });
+            }
+            if (pend2.length) await audit(w.id, "advisor_whatsapp", "workspace", null, { ok: true, via: "pending_delivered", count: pend2.length });
+          }
+        };
+        // deno-lint-ignore no-explicit-any
+        const ERo = (globalThis as any).EdgeRuntime;
+        const jo = others().catch((e) => console.error("advisor others", (e as Error)?.message));
+        if (ERo?.waitUntil) ERo.waitUntil(jo);
+      }
       // v65: respuestas del asesor a solicitudes de horario especial ("ACEPTO CITA-AB12", "PROPONGO CITA-AB12 jueves 3 pm").
       const cmd = await handleAdvisorCommand(wsRow, message).catch((e) => `No pude procesar tu respuesta (${(e as Error)?.message || e}).`);
       if (cmd) return { ok: true, execution_id: execId, conversation_id: null, lead: body.lead || {}, state: body.state || {}, reply: cmd };
@@ -723,6 +752,9 @@ async function actionChat(body: any, caller: Caller, execId: string) {
 
   const { data: services } = await admin.from("services").select("id,name,description,ideal_for,pricing,scope,terms,active").eq("workspace_id", ws).eq("active", true).order("created_at", { ascending: true }).limit(40);
   let state: any = { ...(conv.state || {}) };
+  // v69: idioma fijo de la conversación (el del primer mensaje del cliente) para negocios bilingües.
+  const langAuto = (wsRow.settings || {}).lang_mode === "auto";
+  if (langAuto && state.lang !== "en" && state.lang !== "es") state.lang = detectLang([msgs.find((m) => m.role === "user")?.content || message]);
   // Selección por número del menú ("3", "el 3", "punto 3", "opción 3", "el tercero"): se le indica a la IA qué servicio es.
   {
     const mm = message.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").trim();
@@ -790,7 +822,7 @@ async function actionChat(body: any, caller: Caller, execId: string) {
     out = { reply: welcomeTxt + (settings.use_emojis === false ? "\n¿En qué te puedo servir hoy?" : "\n¿En qué te puedo servir hoy? 😊"), intent: "saludo", confirmed: [], hypotheses: [], missing: [], service_match: { service_id: null, reason: "saludo" }, out_of_catalog: false, advance_confirmed: false, ready_for_proposal: false, sources_used: [] };
     model = "welcome"; usage = null;
   } else try {
-    ({ out, model, usage } = await callLLM(systemPrompt(company, catalog, kdocs, state, leadInfo, bundleInfo, greeted, lines) + (schedCfg(wsRow)?.mode === "service" ? BOOKING_RULES : ""), recent));
+    ({ out, model, usage } = await callLLM(systemPrompt(company, catalog, kdocs, state, leadInfo, bundleInfo, greeted, lines) + (schedCfg(wsRow)?.mode === "service" ? BOOKING_RULES : "") + (langAuto ? langRule(state.lang) : ""), recent));
   } catch (e) {
     await logError(ws, execId, "GL-CI-02", "LLM_FALLBACK", (e as Error)?.message || String(e), { conversation_id: conv.id });
     out = fallbackTurn(message, state, lead, greeted, services || [], bundleInfo, String(company.name || ""), String(settings.welcome_text || ""), lines, [...recent].reverse().find((x) => x.role === "assistant")?.content || "");
@@ -817,6 +849,7 @@ async function actionChat(body: any, caller: Caller, execId: string) {
   for (const k of ["name", "phone", "company"]) if (real(out.lead?.[k]) && !lead[k]) lp[k] = real(out.lead[k]);
   if (clean(out.lead?.email) && isEmail(clean(out.lead.email))) lp.email = clean(out.lead.email);
   const newState = mergeState(state, out);
+  if (state.lang) (newState as any).lang = state.lang; // v69
   if (state.scheduling) (newState as any).scheduling = state.scheduling; // v68: el estado del agendamiento no se pierde entre turnos
 
   // GL-CI-03 SERVICE MATCH (validado contra catálogo)
@@ -846,7 +879,7 @@ async function actionChat(body: any, caller: Caller, execId: string) {
   const sc0 = schedCfg(wsRow);
   if (sc0?.mode === "service" && svc && caller.kind === "public" && clean(lead.phone || body.lead?.phone) && !newState.proposal_ready && typeof out.reply === "string") {
     try {
-      const lang = sc0.lang === "auto" ? detectLang(recent.filter((m) => m.role === "user").slice(-3).map((m) => m.content)) : sc0.lang;
+      const lang = sc0.lang === "auto" ? ((newState as any).lang || detectLang(recent.filter((m) => m.role === "user").slice(-3).map((m) => m.content))) : sc0.lang;
       const of = await offerForService(wsRow, { ...conv, state: newState }, lead.id, svc.id, svc.name, lang);
       if (of) {
         // la oferta de horarios reemplaza el cierre "¿te envío la cotización?" que a veces agrega la IA
@@ -954,7 +987,7 @@ async function actionChat(body: any, caller: Caller, execId: string) {
     if (ER?.waitUntil) ER.waitUntil(job); else job.catch(() => {});
   }
 
-  return { ok: true, execution_id: execId, conversation_id: conv.id, lead_id: lead.id, lead: { name: leadNow.name || null, email: leadNow.email || null, phone: leadNow.phone || null, company: leadNow.company || null }, reply: out.reply, status, state: newState, proposal, auto_send_token: proposal?.auto_send_token || null };
+  return { ok: true, execution_id: execId, conversation_id: conv.id, lead_id: lead.id, lead: { name: leadNow.name || null, email: leadNow.email || null, phone: leadNow.phone || null, company: leadNow.company || null }, reply: out.reply, status, state: newState, proposal, auto_send_token: proposal?.auto_send_token || null, lang: (newState as any).lang || null };
 }
 
 // ---------- Notas de voz: descarga desde WhatsApp y transcripción con Gemini ----------
@@ -1064,7 +1097,7 @@ async function waAdvisor(ws: any, p: any, lead: any, headline: string) {
   const q = p.quote || {};
   const phone = String(lead?.phone || "").replace(/\D/g, "");
   const vals = [headline, lead?.name, lead?.email, phone ? "+" + phone : "", q.solucion, q.inversion?.display, quoteCode(p.id), phone ? `https://wa.me/${phone}` : "(sin número)"].map(waParam);
-  const text = WA_TPL_TEXT.replace(/\{\{(\d)\}\}/g, (_m, i) => vals[Number(i) - 1] ?? "");
+  const text = (s.notify_tag ? `[${s.notify_tag}] ` : "") + WA_TPL_TEXT.replace(/\{\{(\d)\}\}/g, (_m, i) => vals[Number(i) - 1] ?? "");
   // v64: 1) GRATIS desde el número de SIERRA si el asesor le escribió en las últimas 24 h (ventana de servicio de Meta).
   const winAt = a.wa_window_at ? Date.parse(a.wa_window_at) : 0;
   if (Date.now() - winAt < 23.5 * 3600 * 1000) {
@@ -1113,6 +1146,60 @@ async function waSetup() {
   const r = await fetch(`https://graph.facebook.com/v23.0/${waba}/message_templates`, { method: "POST", headers: { Authorization: `Bearer ${c.token}`, "Content-Type": "application/json" }, body: JSON.stringify({ name: WA_TPL, language: "es", category: "UTILITY", components: [{ type: "BODY", text: WA_TPL_TEXT, example: { body_text: [ex] } }] }) });
   return { ok: r.ok, waba, created: await r.json().catch(() => null) };
 }
+// v69: correo de marca para negocios de citas (spa): plan personalizado + cita, en el idioma de la conversación.
+async function convLangOf(convId: string | null): Promise<"en" | "es"> {
+  if (!convId) return "es";
+  const { data: c } = await admin.from("conversations").select("state").eq("id", convId).maybeSingle();
+  const st = c?.state || {};
+  if (st.lang === "en" || st.lang === "es") return st.lang;
+  if (st.scheduling?.lang === "en" || st.scheduling?.lang === "es") return st.scheduling.lang;
+  const { data: m } = await admin.from("messages").select("content").eq("conversation_id", convId).eq("role", "user").order("created_at", { ascending: true }).limit(3);
+  return detectLang((m || []).map((x: { content: string }) => x.content));
+}
+// deno-lint-ignore no-explicit-any
+async function nextApptOf(ws: any, leadId: string | null) {
+  if (!leadId) return null;
+  const { data } = await admin.from("appointments").select("starts_at,ends_at,location").eq("workspace_id", ws.id).eq("lead_id", leadId).eq("status", "confirmed").gte("ends_at", new Date().toISOString()).order("starts_at", { ascending: true }).limit(1).maybeSingle();
+  return data || null;
+}
+// deno-lint-ignore no-explicit-any
+async function spaEmail(ws: any, p: any, viewUrl: string | null) {
+  const s = ws.settings || {};
+  const L = await convLangOf(p.conversation_id);
+  const en = L === "en";
+  const q = p.quote || {};
+  const company = s.company_name || ws.name;
+  const sc = s.scheduling || {};
+  const svcName = (sc.service_names?.[p.service_id]?.[L]) || q.solucion || "";
+  const first = String(q.cliente?.nombre || "").split(" ")[0];
+  const ap = await nextApptOf(ws, p.lead_id);
+  const tz = sc.timezone || "America/New_York";
+  const tzl = (sc.tz_label || {})[L] || (en ? "local time" : "hora local");
+  const when = ap ? new Intl.DateTimeFormat(en ? "en-US" : "es-CO", { timeZone: tz, weekday: "long", month: "long", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(ap.starts_at)).replace(/[  ]/g, " ") : "";
+  const lav = s.accent_color || "#c9a0dc", deep = s.brand_color || "#1c1430";
+  const logo = s.logo_url ? `<img src="${escH(s.logo_url)}" alt="${escH(company)}" style="max-width:200px;height:auto;margin:0 auto 6px;display:block">` : "";
+  const T = en ? {
+    h: "Your personalized plan", hi: first ? `Hi ${escH(first)},` : "Hi,", p1: `thank you for choosing ${escH(company)}. Here is your personalized plan for <b>${escH(svcName)}</b>: every step, what's included and how to prepare. Aurora, your virtual guide, will walk you through it.`,
+    appt: "Your appointment", inv: "Your investment", btn: "✨ View my plan with Aurora", foot: "Questions? Just reply to this email or write us on WhatsApp.", subj: `Your personalized plan: ${svcName} — ${company}`,
+  } : {
+    h: "Tu plan personalizado", hi: first ? `Hola ${escH(first)},` : "Hola,", p1: `gracias por elegir ${escH(company)}. Aquí tienes tu plan personalizado de <b>${escH(svcName)}</b>: cada paso, lo que incluye y cómo prepararte. Aurora, tu guía virtual, te lo explica.`,
+    appt: "Tu cita", inv: "Tu inversión", btn: "✨ Ver mi plan con Aurora", foot: "¿Preguntas? Responde este correo o escríbenos por WhatsApp.", subj: `Tu plan personalizado: ${svcName} — ${company}`,
+  };
+  const price = q.inversion?.display ? `${escH(q.inversion.display)}${en ? " + tax" : " + impuestos"}` : "";
+  const html = `<div style="background:#f4eef9;padding:28px 12px;font-family:Arial,Helvetica,sans-serif">
+<div style="max-width:600px;margin:0 auto;background:#ffffff;border-radius:22px;overflow:hidden;box-shadow:0 10px 30px rgba(74,44,99,.12)">
+<div style="background:#efe4f7;padding:28px 24px 18px;text-align:center">${logo}</div>
+<div style="padding:26px 30px 30px;color:#251d30">
+<div style="font-size:12px;letter-spacing:3px;text-transform:uppercase;color:#7b52a0;font-weight:bold">${T.h}</div>
+<h1 style="font-family:Georgia,serif;font-weight:normal;font-size:30px;margin:8px 0 14px;color:${deep}">${escH(svcName)}</h1>
+<p style="font-size:15px;line-height:1.7;margin:0 0 18px;color:#4a4253">${T.hi} ${T.p1}</p>
+${ap ? `<div style="background:#f4eef9;border-radius:14px;padding:14px 18px;margin:0 0 12px"><div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#7b52a0;font-weight:bold">📅 ${T.appt}</div><div style="font-size:16px;margin-top:4px;color:${deep}"><b>${escH(when)}</b> (${escH(tzl)})</div>${ap.location ? `<div style="font-size:14px;color:#6f6679;margin-top:2px">📍 ${escH(ap.location)}</div>` : ""}</div>` : ""}
+${price ? `<div style="background:${deep};border-radius:14px;padding:14px 18px;margin:0 0 20px;color:#fff"><div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#cdb3dd;font-weight:bold">${T.inv}</div><div style="font-family:Georgia,serif;font-size:26px;margin-top:2px">${price}</div></div>` : ""}
+${viewUrl ? `<div style="text-align:center;margin:24px 0 8px"><a href="${escH(viewUrl)}" style="display:inline-block;background:${lav};color:${deep};text-decoration:none;padding:15px 30px;border-radius:999px;font-weight:bold;font-size:16px">${T.btn}</a></div>` : ""}
+<p style="font-size:13px;color:#8a7f96;text-align:center;margin:22px 0 0">${T.foot}</p>
+</div></div><div style="text-align:center;font-size:12px;color:#8a7f96;margin-top:14px">${escH(company)}</div></div>`;
+  return { html, subject: T.subj, lang: L };
+}
 // Ficha del prospecto para el asesor humano (se envía cuando el cliente recibe su cotización).
 // deno-lint-ignore no-explicit-any
 async function sendRoadmapMail(ws: any, p: any, to: string, viewUrl: string, bookUrl: string | null) {
@@ -1158,7 +1245,7 @@ async function sendLeadCard(ws: any, p: any, lead: any, viewUrl: string | null) 
   const winOpen = sa.wa_window_at && Date.now() - Date.parse(sa.wa_window_at) < 23.5 * 3600 * 1000;
   const botWa = String((ws.settings || {}).bot_whatsapp || "573113692698").replace(/\D/g, "");
   const banner = (!winOpen && sa.whatsapp) ? `<div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto 12px;background:#fff7e6;border:1px solid #f5c26b;border-radius:12px;padding:14px 18px;color:#5c3d00;font-size:14px">⚠️ <b>El aviso por WhatsApp quedó en espera.</b> Meta solo deja que SIERRA te escriba gratis si le escribiste en las últimas 24 h. Toca el botón <b>desde el celular del WhatsApp Business</b> y te llegan todos los avisos pendientes:<br><br><a href="https://wa.me/${botWa}?text=activar" style="background:#25d366;color:#fff;text-decoration:none;padding:10px 18px;border-radius:999px;font-weight:700">✅ Activar avisos de WhatsApp</a></div>` : "";
-  await mailAdvisor(ws, `Nuevo prospecto: ${lead.name || "Cliente"} — ${q.solucion || "cotización"} (${quoteCode(p.id)})`, banner + html);
+  await mailAdvisor(ws, `${(ws.settings || {}).notify_tag ? `[${(ws.settings || {}).notify_tag}] ` : ""}Nuevo prospecto: ${lead.name || "Cliente"} — ${q.solucion || "cotización"} (${quoteCode(p.id)})`, banner + html);
 }
 // Enlace "Agendar reunión": registra el interés, alerta al asesor y abre el chat humano con mensaje prellenado.
 async function handleBookingClick(token: string): Promise<Response> {
@@ -1226,7 +1313,7 @@ async function actionApproval(body: any, caller: Caller, execId: string, approve
 async function actionView(body: { token?: string }) {
   const token = clean(body.token);
   if (!/^[0-9a-f-]{36}$/i.test(token)) throw new StepError("GL-CI-09", "NOT_FOUND", "Propuesta no disponible", 404);
-  const { data: p } = await admin.from("proposals").select("id,workspace_id,quote,roadmap,approval_status,viewed_at").eq("share_token", token).maybeSingle();
+  const { data: p } = await admin.from("proposals").select("id,workspace_id,quote,roadmap,approval_status,viewed_at,service_id,conversation_id,lead_id").eq("share_token", token).maybeSingle();
   if (!p || p.approval_status !== "approved") throw new StepError("GL-CI-09", "NOT_FOUND", "Propuesta no disponible", 404);
   const { data: ws } = await admin.from("workspaces").select("*").eq("id", p.workspace_id).single();
   if (!p.viewed_at) {
@@ -1234,7 +1321,15 @@ async function actionView(body: { token?: string }) {
     await audit(p.workspace_id, "proposal_viewed", "proposal", p.id, { first_view: true });
   }
   const bookUrl = bookUrlFor(token);
-  return { ok: true, html: renderHtml(ws, p.quote, p.roadmap || {}, false, bookUrl), data: roadmapData(ws, p.quote, p.roadmap || {}, bookUrl) };
+  // deno-lint-ignore no-explicit-any
+  const data: any = roadmapData(ws, p.quote, p.roadmap || {}, bookUrl);
+  // v69: plantilla de roadmap propia del espacio (p. ej. "luna-studio" para el spa), con idioma y cita.
+  const tpl = (ws.settings || {}).roadmap_template || null;
+  if (tpl) {
+    const ap = await nextApptOf(ws, p.lead_id);
+    Object.assign(data, { template: tpl, service_id: p.service_id || null, lang: await convLangOf(p.conversation_id), client_name: p.quote?.cliente?.nombre || null, price: p.quote?.inversion?.display || null, appointment: ap ? { start: ap.starts_at, end: ap.ends_at, location: ap.location, tz: (ws.settings || {}).scheduling?.timezone || null } : null, bot_whatsapp: String((ws.settings || {}).scheduling?.bot_whatsapp || "").replace(/\D/g, "") || null });
+  }
+  return { ok: true, html: renderHtml(ws, p.quote, p.roadmap || {}, false, bookUrl), data };
 }
 // Envío automático: autorización de un solo uso ligada al lead/propuesta de esta conversación.
 async function actionAutoSendEmail(body: any, execId: string) {
@@ -1318,7 +1413,9 @@ async function actionAutoSendEmail(body: any, execId: string) {
   const webHtml = renderHtml(ws, p.quote, p.roadmap || {}, false, bookUrl);
   const base = String(s.public_base_url || "").replace(/\/+$/, "");
   const viewUrl = base && p.share_token ? `${base}/p/${p.share_token}` : null;
-  const mailHtml = renderEmail(ws, p.quote, p.roadmap || {}, viewUrl, bookUrl);
+  // v69: negocios con correo propio (p. ej. spa): un solo correo con su marca, en el idioma de la conversación.
+  const spaMail = s.email_style === "spa" ? await spaEmail(ws, p, viewUrl) : null;
+  const mailHtml = spaMail ? spaMail.html : renderEmail(ws, p.quote, p.roadmap || {}, viewUrl, bookUrl);
   // Adjunto: roadmap interactivo HTML autónomo, personalizado con los datos del cliente.
   let attachments: { filename: string; content: string; content_type: string }[] | undefined;
   // v61: Gmail bloquea adjuntos desde la cuenta de WIA; si hay enlace al roadmap en línea, no se adjunta.
@@ -1334,7 +1431,7 @@ async function actionAutoSendEmail(body: any, execId: string) {
     method: "POST",
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
     body: JSON.stringify({
-      from, to: [to], subject: `Propuesta: ${p.quote?.solucion || "servicio"} — ${s.company_name || ws.name}`,
+      from, to: [to], subject: spaMail ? spaMail.subject : `Propuesta: ${p.quote?.solucion || "servicio"} — ${s.company_name || ws.name}`,
       html: mailHtml, reply_to: s.contact_email || undefined, attachments,
     }),
   });
@@ -1350,7 +1447,7 @@ async function actionAutoSendEmail(body: any, execId: string) {
     const lc = (async () => {
       // v64: segundo correo al cliente con su roadmap interactivo (sin adjunto, abre en línea).
       await Promise.all([
-        viewUrl ? sendRoadmapMail(ws, p, to, viewUrl, bookUrl).catch((e) => console.error("roadmap mail", (e as Error)?.message)) : Promise.resolve(),
+        viewUrl && !spaMail ? sendRoadmapMail(ws, p, to, viewUrl, bookUrl).catch((e) => console.error("roadmap mail", (e as Error)?.message)) : Promise.resolve(),
         sendLeadCard(ws, p, lead, viewUrl),
       ]);
     })().catch((e) => console.error("lead card", (e as Error)?.message));

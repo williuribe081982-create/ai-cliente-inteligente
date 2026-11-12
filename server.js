@@ -56,7 +56,9 @@ const TXT={
     down:"Thanks for reaching out 🙌. I can't process your message automatically right now. Someone from our team will reply soon."
   }
 };
-const t=(route,k)=>(TXT[route.lang]||TXT.es)[k];
+// Idioma de los textos fijos: el de la conversación (lo informa el agente) o el del número.
+const t=(route,k,lang)=>(TXT[lang||route.lang]||TXT.es)[k];
+const langOf=(sid,route)=>{ try{ return store()[sid]?.lang||route.lang; }catch(_){ return route.lang; } };
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const DATA_FILE = path.join(DATA_DIR, "conversations.json");
 
@@ -134,7 +136,9 @@ app.get("/p/:token",async(req,res)=>{
     if(!response.ok) return res.status(404).send("Propuesta no disponible");
     const data=JSON.parse(raw);
     // Roadmap interactivo con los datos de esta propuesta; si falta la plantilla, se muestra la propuesta estática.
-    const tplPath=path.join(__dirname,"roadmap.html");
+    // Plantilla propia del espacio (p. ej. "luna-studio" → roadmap-luna-studio.html); si no existe, la de WIA.
+    const own=data?.data?.template && /^[a-z0-9-]+$/.test(data.data.template) ? path.join(__dirname,`roadmap-${data.data.template}.html`) : null;
+    const tplPath=own && fs.existsSync(own) ? own : path.join(__dirname,"roadmap.html");
     if(data?.data && fs.existsSync(tplPath)){
       const tpl=fs.readFileSync(tplPath,"utf8");
       const json=JSON.stringify(data.data).replace(/</g,"\\u003c");
@@ -265,6 +269,7 @@ async function transcribeVoice(mediaId, route=MAIN_ROUTE){
 async function askAI(message, phone, newConversation=false, route=MAIN_ROUTE){
   try{
     const data=await callAgent("chat",phone,{message,...(newConversation?{new_conversation:true}: {})},route);
+    if(data?.lang==="en"||data?.lang==="es") updateSession(phone,{lang:data.lang});
 
     // Persistir explícitamente la propuesta/autorización devuelta por ci-agent.
     // Esto evita perder el vínculo entre la conversación actual y el envío automático.
@@ -282,10 +287,10 @@ async function askAI(message, phone, newConversation=false, route=MAIN_ROUTE){
       });
     }
 
-    return data.reply || t(route,"noreply");
+    return data.reply || t(route,"noreply",langOf(phone,route));
   }catch(error){
     console.error(new Date().toISOString(),"Error chat:",error?.message||error);
-    return t(route,"down");
+    return t(route,"down",langOf(phone,route));
   }
 }
 
@@ -410,12 +415,12 @@ app.post("/webhook",async(req,res)=>{
             // Nota de voz: se transcribe en ci-agent (Gemini) y se procesa como texto.
             text=await transcribeVoice(message.audio?.id,route);
             if(!text){
-              try{ await send(t(route,"voice")); }catch(e){ console.error(new Date().toISOString(),"Aviso audio:",e?.message||e); }
+              try{ await send(t(route,"voice",langOf(phone,route))); }catch(e){ console.error(new Date().toISOString(),"Aviso audio:",e?.message||e); }
               continue;
             }
             console.log(new Date().toISOString(),"Nota de voz transcrita de ...",String(phone).slice(-4));
           }else if(["image","video","document","location","contacts"].includes(message.type)){
-            try{ await send(t(route,"media")); }catch(e){ console.error(new Date().toISOString(),"Aviso multimedia:",e?.message||e); }
+            try{ await send(t(route,"media",langOf(phone,route))); }catch(e){ console.error(new Date().toISOString(),"Aviso multimedia:",e?.message||e); }
             continue;
           }
           if(!text) continue; // reacciones, stickers y otros eventos se ignoran
@@ -433,7 +438,7 @@ app.post("/webhook",async(req,res)=>{
 
             const emailResult=await maybeApproveAndSend(phone,route);
             if(emailResult?.sent===true){
-              await send(t(route,"sent"));
+              await send(t(route,"sent",langOf(phone,route)));
               console.log(new Date().toISOString(),"Propuesta enviada por email a ...",String(phone).slice(-4));
             } else {
               // Watchdog: si el primer intento falla, reintenta a los 15s, 45s, 90s y 150s (siempre dentro de 3 minutos).
@@ -441,7 +446,7 @@ app.post("/webhook",async(req,res)=>{
                 try{
                   const result=await maybeApproveAndSend(phone,route);
                   if(result?.sent===true){
-                    await send(t(route,"sent"));
+                    await send(t(route,"sent",langOf(phone,route)));
                     console.log(new Date().toISOString(),"Propuesta enviada por email mediante reintento a ...",String(phone).slice(-4));
                   }
                 }catch(error){
@@ -485,7 +490,7 @@ async function recoverPendingEmails(){
       const result=await maybeApproveAndSend(phone,route);
       if(result?.sent===true){
         try{
-          await sendWhatsAppText(phoneOf(phone),t(route,"sent"),route);
+          await sendWhatsAppText(phoneOf(phone),t(route,"sent",langOf(phone,route)),route);
         }catch(error){
           console.error(new Date().toISOString(),"Email enviado pero no se pudo confirmar por WhatsApp:",error?.message||error);
         }
