@@ -1,4 +1,5 @@
 // SIERRA — Asistente Comercial Inteligente: motor del agente (Supabase Edge Function "ci-agent")
+// v72 (2026-11-12): roadmap de la cita sin cotización (action "appt_view", enlace /r/{cita} en la confirmación).
 // v71 (2026-11-12): velocidad — tope de 20 s para la IA (antes 45 s), modelos en paralelo, modelos saturados se saltan 2 min;
 //   bienvenida instantánea por idioma (settings.welcome_text_en / welcome_text_es).
 // v70 (2026-11-12): un saludo inicia conversación nueva si pasaron más de settings.resume_minutes (10 min por defecto; antes 2 h).
@@ -1337,6 +1338,27 @@ async function actionView(body: { token?: string }) {
   }
   return { ok: true, html: renderHtml(ws, p.quote, p.roadmap || {}, false, bookUrl), data };
 }
+// v72: datos del roadmap de una cita (modo "service"): servicio, idioma, nombre, precio y la cita. Solo lectura.
+// deno-lint-ignore no-explicit-any
+async function actionApptView(body: any) {
+  const id = clean(body.id);
+  if (!/^[0-9a-f-]{36}$/i.test(id)) throw new StepError("GL-CI-09", "NOT_FOUND", "Cita no disponible", 404);
+  const { data: ap } = await admin.from("appointments").select("id,workspace_id,lead_id,conversation_id,starts_at,ends_at,location,status").eq("id", id).maybeSingle();
+  if (!ap || !["confirmed", "hold", "requested", "proposed"].includes(ap.status)) throw new StepError("GL-CI-09", "NOT_FOUND", "Cita no disponible", 404);
+  const { data: ws } = await admin.from("workspaces").select("*").eq("id", ap.workspace_id).single();
+  const s = ws?.settings || {};
+  if (!s.roadmap_template) throw new StepError("GL-CI-09", "NOT_FOUND", "Cita no disponible", 404);
+  const { data: conv } = ap.conversation_id ? await admin.from("conversations").select("state").eq("id", ap.conversation_id).maybeSingle() : { data: null };
+  const st = conv?.state || {};
+  const svcId = st.scheduling?.service_id || st.chosen_service_id || null;
+  const { data: svc } = svcId ? await admin.from("services").select("pricing").eq("id", svcId).maybeSingle() : { data: null };
+  const { data: lead } = ap.lead_id ? await admin.from("leads").select("name").eq("id", ap.lead_id).maybeSingle() : { data: null };
+  const pr = svc?.pricing || {};
+  const price = pr.amount ? `${(pr.currency || s.currency) === "USD" ? "US$" : (pr.currency || "")} ${Number(pr.amount).toLocaleString("en-US")}`.trim() : null;
+  await audit(ap.workspace_id, "appointment_plan_viewed", "appointment", ap.id, {});
+  return { ok: true, data: { template: s.roadmap_template, service_id: svcId, lang: await convLangOf(ap.conversation_id), client_name: lead?.name || null, price,
+    appointment: { start: ap.starts_at, end: ap.ends_at, location: ap.location, tz: s.scheduling?.timezone || null }, bot_whatsapp: String(s.scheduling?.bot_whatsapp || "").replace(/\D/g, "") || null } };
+}
 // Envío automático: autorización de un solo uso ligada al lead/propuesta de esta conversación.
 async function actionAutoSendEmail(body: any, execId: string) {
   const proposalId = clean(body.proposal_id);
@@ -1651,6 +1673,7 @@ Deno.serve(async (req) => {
       return json(await actionChat(body, caller, execId));
     }
     if (action === "view") return json(await actionView(body));
+    if (action === "appt_view") return json(await actionApptView(body));
     if (action === "transcribe") {
       // Canal WhatsApp: convierte una nota de voz en texto (requiere la public_key del canal).
       const { data: wsT } = await admin.from("workspaces").select("id").eq("public_key", clean(body.public_key)).maybeSingle();

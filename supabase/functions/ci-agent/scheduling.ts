@@ -657,7 +657,7 @@ async function book(wsRow: any, c: SchedCfg, ctx: any, slot: { start: string; en
   bg(notifyAdvisorBooked(wsRow, c, ctx, appt));
   return { ok: true, appt };
 }
-function confirmText(c: SchedCfg, appt: any, lead: any, lang: Lang = "es", svcName: string | null = null) {
+function confirmText(c: SchedCfg, appt: any, lead: any, lang: Lang = "es", svcName: string | null = null, planUrl: string | null = null) {
   const d = new Date(appt.starts_at), e = c.emojis, en = lang === "en";
   const mins = Math.round((Date.parse(appt.ends_at) - Date.parse(appt.starts_at)) / 60000) || c.slot_minutes;
   const where = appt.meet_url ? `${e ? "💻 " : ""}Google Meet: ${appt.meet_url}` : appt.location ? `${e ? "📍 " : ""}${appt.location}` : c.virtual ? `${e ? "💻 " : ""}${en ? "The video call link will arrive in your email." : "El enlace de la videollamada llegará a tu correo."}` : "";
@@ -665,10 +665,11 @@ function confirmText(c: SchedCfg, appt: any, lead: any, lang: Lang = "es", svcNa
   if (c.mode !== "service") return `${e ? "✅ " : ""}¡Reunión confirmada!\n${e ? "📅 " : ""}${fmtDayCap(d, c.timezone)}, ${fmtTime(d, c.timezone)} (${c.tz_label.es}, ${c.slot_minutes} min)\n${where}${mail}\n\nSi necesitas cambiarla, escríbeme por aquí.`;
   const head = en ? "Your appointment is confirmed!" : "¡Tu cita quedó confirmada!";
   const svc = svcName ? `${e ? "💆 " : ""}${svcName}\n` : "";
+  const plan = planUrl ? (en ? `\n\n${e ? "✨ " : ""}*Your personalized plan with Aurora* (every step and how to prepare):\n${planUrl}` : `\n\n${e ? "✨ " : ""}*Tu plan personalizado con Aurora* (cada paso y cómo prepararte):\n${planUrl}`) : "";
   const tail = lead?.email
     ? (en ? "If you need to change it, just write me here." : "Si necesitas cambiarla, escríbeme por aquí.")
-    : (en ? "If you'd like your personalized plan and confirmation by email, just send me your full name and email. If you need to change the appointment, write me here." : "Si quieres recibir tu plan personalizado y la confirmación por correo, envíame tu nombre completo y tu correo. Si necesitas cambiar la cita, escríbeme por aquí.");
-  return `${e ? "✅ " : ""}${head}\n${svc}${e ? "📅 " : ""}${fmtDayCap(d, c.timezone, lang)}, ${fmtTime(d, c.timezone, lang)} (${c.tz_label[lang]}, ${fmtDur(mins)})\n${where}${mail}\n\n${tail}`;
+    : (en ? "If you'd also like the confirmation by email, send me your full name and email. If you need to change the appointment, write me here." : "Si también quieres la confirmación por correo, envíame tu nombre completo y tu correo. Si necesitas cambiar la cita, escríbeme por aquí.");
+  return `${e ? "✅ " : ""}${head}\n${svc}${e ? "📅 " : ""}${fmtDayCap(d, c.timezone, lang)}, ${fmtTime(d, c.timezone, lang)} (${c.tz_label[lang]}, ${fmtDur(mins)})\n${where}${mail}${plan}\n\n${tail}`;
 }
 async function notifyAdvisorBooked(wsRow: any, c: SchedCfg, ctx: any, appt: any) {
   if (c.dry_run) { await D.audit(wsRow.id, "sched_advisor_dry_run", "appointment", appt.id, { kind: "booked" }); return; }
@@ -869,14 +870,14 @@ export async function handleTurn(wsRow: any, phone: string, message: string): Pr
     if (quick === null) {
       bg((async () => {
         const r = await job;
-        const txt = r.ok ? confirmText(c, r.appt, ctx.lead, L, svcName) : w.lateFail;
+        const txt = r.ok ? confirmText(c, r.appt, ctx.lead, L, svcName, planUrlOf(wsRow, c, r.appt)) : w.lateFail;
         await saveSched(convId, r.ok ? { ...keep, step: "confirmed", appointment_id: r.appt.id, proposal_id: ctx.proposal.id } : { ...keep, step: "idle", proposal_id: ctx.proposal.id });
         await sendClient(wsRow, c, phone, txt, convId, { kind: r.ok ? "confirm_late" : "fail_late" });
       })());
       return await reply(`${e ? "⏳ " : ""}${w.slowConfirm}`, { step: "booking" }, { slow: true });
     }
     const r = quick as BookResult;
-    if (r.ok) return await reply(confirmText(c, r.appt, ctx.lead, L, svcName), { step: "confirmed", appointment_id: r.appt.id }, { booked: true });
+    if (r.ok) return await reply(confirmText(c, r.appt, ctx.lead, L, svcName, planUrlOf(wsRow, c, r.appt)), { step: "confirmed", appointment_id: r.appt.id }, { booked: true });
     // ocupado o error: nunca se confirma; se ofrecen nuevas opciones reales
     let opts: Slot[] = [];
     try { opts = (await defaultOffer(wsRow, c)).filter((s) => s.start !== slot.start); } catch (_) { /* calendario no disponible */ }
@@ -1033,6 +1034,12 @@ async function ctxForAppt(ap: any) {
   const { data: lead } = await D.admin.from("leads").select("*").eq("id", p.lead_id).single();
   return { proposal: p, lead, conv: await loadConv(p.conversation_id), appt: ap };
 }
+/** v72: enlace al roadmap de la cita (modo "service" con plantilla propia): {public_base_url}/r/{id de la cita}. */
+export function planUrlOf(wsRow: any, c: SchedCfg, appt: any): string | null {
+  const s = wsRow?.settings || {};
+  const base = String(s.public_base_url || "").replace(/\/+$/, "");
+  return c.mode === "service" && s.roadmap_template && base && appt?.id ? `${base}/r/${appt.id}` : null;
+}
 const ctxLang = (c: SchedCfg, ctx: any): Lang => (c.lang === "en" ? "en" : c.lang === "auto" && (ctx?.conv?.state?.scheduling?.lang || ctx?.conv?.state?.lang) === "en" ? "en" : "es");
 const ctxKeep = (ctx: any) => { const s = ctx?.conv?.state?.scheduling || {}; return { lang: s.lang, minutes: s.minutes, service_id: s.service_id, service_name: s.service_name }; };
 async function advisorAccept(wsRow: any, c: SchedCfg, ap: any): Promise<string> {
@@ -1044,7 +1051,7 @@ async function advisorAccept(wsRow: any, c: SchedCfg, ap: any): Promise<string> 
   }
   const L = ctxLang(c, ctx);
   await saveSched(ctx.proposal.conversation_id, { ...ctxKeep(ctx), step: "confirmed", appointment_id: ap.id, proposal_id: ctx.proposal.id });
-  await sendClient(wsRow, c, ctx.lead.phone, W(c, L).goodNews + confirmText(c, r.appt, ctx.lead, L, ctx.conv?.state?.scheduling?.service_name || null), ctx.proposal.conversation_id, { kind: "special_accepted" });
+  await sendClient(wsRow, c, ctx.lead.phone, W(c, L).goodNews + confirmText(c, r.appt, ctx.lead, L, ctx.conv?.state?.scheduling?.service_name || null, planUrlOf(wsRow, c, r.appt)), ctx.proposal.conversation_id, { kind: "special_accepted" });
   return `✅ Listo. Reunión confirmada con ${ctx.lead?.name || "el cliente"} el ${fmtFull(new Date(ap.starts_at), c.timezone)}: ya le avisé y quedó en tu calendario.`;
 }
 async function advisorDecline(wsRow: any, c: SchedCfg, ap: any): Promise<string> {

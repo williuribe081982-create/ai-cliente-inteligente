@@ -154,6 +154,25 @@ app.get("/p/:token",async(req,res)=>{
 });
 
 
+// Roadmap de una cita (negocios de citas con plantilla propia, p. ej. Luna Spa): /r/{id de la cita}.
+app.get("/r/:id",async(req,res)=>{
+  try{
+    if(!AI_AGENT_URL || !/^[0-9a-f-]{36}$/i.test(req.params.id)) return res.sendStatus(404);
+    const response=await fetch(AI_AGENT_URL,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"appt_view",id:req.params.id})});
+    if(!response.ok) return res.status(404).send("Plan no disponible");
+    const data=await response.json();
+    const t=data?.data?.template;
+    const tplPath=t && /^[a-z0-9-]+$/.test(t) ? path.join(__dirname,`roadmap-${t}.html`) : null;
+    if(!tplPath || !fs.existsSync(tplPath)) return res.sendStatus(404);
+    const json=JSON.stringify(data.data).replace(/</g,"\\u003c");
+    const html=fs.readFileSync(tplPath,"utf8").replace(/\/\*DATA\*\/[\s\S]*?\/\*\/DATA\*\//,()=>"/*DATA*/"+json+"/*/DATA*/");
+    return res.set("Cache-Control","no-store").type("html").send(html);
+  }catch(error){
+    console.error(new Date().toISOString(),"Error plan de cita:",error?.message||error);
+    res.sendStatus(500);
+  }
+});
+
 // Logo de marca usado en correos y roadmap.
 app.get("/brand/logo.png",(_req,res)=>res.set("Cache-Control","public, max-age=604800").sendFile(path.join(__dirname,"logo.png")));
 
