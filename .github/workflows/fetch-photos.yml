@@ -1,0 +1,13 @@
+name: fetch-spa-photos
+on: workflow_dispatch
+permissions:
+  contents: write
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install requests && python tools/fetch_spa_photos.py
+      - run: |
+          git config user.name "wia-bot"; git config user.email "bot@users.noreply.github.com"
+          git add media/spa-cand && git commit -m "spa photo candidates" && git push || echo nothing
