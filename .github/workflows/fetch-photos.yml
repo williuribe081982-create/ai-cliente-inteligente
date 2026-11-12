@@ -3,12 +3,29 @@ on: workflow_dispatch
 permissions:
   contents: write
 jobs:
-  run:
+  gen:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
     steps:
       - uses: actions/checkout@v4
-      - run: pip install requests && python tools/fetch_spa_photos.py
+      - run: pip install requests && python tools/fetch_spa_photos.py ${{ matrix.shard }} 12
+      - uses: actions/upload-artifact@v4
+        with:
+          name: spa-${{ matrix.shard }}
+          path: out/
+  commit:
+    needs: gen
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: art
       - run: |
+          mkdir -p media/spa && find art -name '*.jpg' -exec cp {} media/spa/ \; && ls media/spa | wc -l
           git config user.name "wia-bot"; git config user.email "bot@users.noreply.github.com"
-          git add media/spa && git commit -m "spa photo candidates" && git push || echo nothing
+          git add media/spa && git commit -m "spa photos (generated)" && git pull --rebase && git push || echo nothing
