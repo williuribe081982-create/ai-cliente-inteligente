@@ -1,0 +1,19 @@
+name: fetch-files
+on:
+  workflow_dispatch:
+    inputs:
+      urls: {description: "name=url lines separated by |", required: true}
+permissions:
+  contents: write
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          mkdir -p media/vo
+          IFS='|' read -ra A <<< "${{ github.event.inputs.urls }}"
+          for p in "${A[@]}"; do n="${p%%=*}"; u="${p#*=}"; curl -sSL "$u" -o "media/vo/$n"; done
+          ls -la media/vo
+          git config user.name "wia-bot"; git config user.email "bot@users.noreply.github.com"
+          git add media/vo && git commit -m "voiceover files" && git pull --rebase && git push
