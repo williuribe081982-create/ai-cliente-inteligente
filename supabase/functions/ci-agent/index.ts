@@ -1,4 +1,5 @@
 // SIERRA — Asistente Comercial Inteligente: motor del agente (Supabase Edge Function "ci-agent")
+// v68 (2026-11-12): agendamiento modo "service" (spa): horarios al elegir el servicio, bilingüe, duración por servicio (scheduling.ts).
 // v67 (2026-10-16): avisos de WhatsApp en cola si la ventana de 24 h está cerrada; se entregan al escribir activar.
 // v66 (2026-10-15): cierre por WhatsApp (handoff.ts) — tras la cotización, invita a escribirle al asesor por WhatsApp Business; settings.handoff.enabled.
 // v65 (2026-10-15): módulo de agendamiento (scheduling.ts) — horarios reales del asesor tras la cotización; se activa con settings.scheduling.enabled.
@@ -19,7 +20,7 @@
 import { createClient, SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { clean, isEmail, mergeState, buildProposal, buildBundleProposal, bundleConfig, renderHtml, renderEmail, roadmapData } from "./proposal.ts";
 import { buildRoadmapAttachment, b64utf8, safeFileName } from "./roadmap_tpl.ts";
-import { initScheduling, schedCfg, handleTurn, handleAdvisorCommand, handleAdvisorLink, offerAfterQuote, tick as schedTick } from "./scheduling.ts";
+import { initScheduling, schedCfg, handleTurn, handleAdvisorCommand, handleAdvisorLink, offerAfterQuote, offerForService, detectLang, tick as schedTick } from "./scheduling.ts";
 import { initHandoff, handoffCfg, handoffAfterQuote } from "./handoff.ts";
 
 const SB_URL = Deno.env.get("SUPABASE_URL")!;
@@ -243,6 +244,16 @@ function linePickNote(lines: any[], lastAssistant: string, n: number): string | 
     : `el cliente eligió la línea ${l.n} "${l.name}". Aplica el paso (A1): muéstrale los servicios de esa línea.`;
 }
 
+// v68: reglas extra para negocios que agendan citas (settings.scheduling.mode = "service").
+const BOOKING_RULES = `
+
+MODO CITAS (este negocio agenda citas por este chat)
+1. En el paso (B), después de explicar el servicio NO ofrezcas la cotización formal ni hagas preguntas de cierre: el sistema agrega automáticamente, debajo de tu mensaje, los horarios disponibles para agendar. Termina con la explicación del servicio.
+2. Nunca inventes horarios, fechas ni disponibilidad, y nunca confirmes una cita: eso lo hace el sistema.
+3. Si ESTADO.scheduling.step es "confirmed" (la cita ya quedó agendada) y el cliente envía su nombre y su correo, eso significa que acepta recibir su plan y la confirmación por correo: guarda lead.name y lead.email tal como los escribió, mantén service_match.service_id del servicio, marca advance_confirmed=true y ready_for_proposal=true, y responde que en un par de minutos recibirá su plan personalizado en el correo.
+4. Si el cliente pide la cotización o el plan por correo antes de agendar, sigue los pasos (C) y (D).
+5. Habla de "cita" (en inglés "appointment"), nunca de "reunión con el asesor".
+6. Responde SIEMPRE en el idioma del primer mensaje del cliente y mantenlo toda la conversación, sin mezclar idiomas; si es inglés, también los nombres de los servicios y los menús.`;
 // deno-lint-ignore no-explicit-any
 function systemPrompt(company: Record<string, unknown>, catalog: unknown[], docs: unknown[], state: unknown, lead: unknown, bundle: any, greeted: boolean, lines: any[] | null = null) {
   const L = !!lines;
@@ -779,7 +790,7 @@ async function actionChat(body: any, caller: Caller, execId: string) {
     out = { reply: welcomeTxt + (settings.use_emojis === false ? "\n¿En qué te puedo servir hoy?" : "\n¿En qué te puedo servir hoy? 😊"), intent: "saludo", confirmed: [], hypotheses: [], missing: [], service_match: { service_id: null, reason: "saludo" }, out_of_catalog: false, advance_confirmed: false, ready_for_proposal: false, sources_used: [] };
     model = "welcome"; usage = null;
   } else try {
-    ({ out, model, usage } = await callLLM(systemPrompt(company, catalog, kdocs, state, leadInfo, bundleInfo, greeted, lines), recent));
+    ({ out, model, usage } = await callLLM(systemPrompt(company, catalog, kdocs, state, leadInfo, bundleInfo, greeted, lines) + (schedCfg(wsRow)?.mode === "service" ? BOOKING_RULES : ""), recent));
   } catch (e) {
     await logError(ws, execId, "GL-CI-02", "LLM_FALLBACK", (e as Error)?.message || String(e), { conversation_id: conv.id });
     out = fallbackTurn(message, state, lead, greeted, services || [], bundleInfo, String(company.name || ""), String(settings.welcome_text || ""), lines, [...recent].reverse().find((x) => x.role === "assistant")?.content || "");
@@ -804,6 +815,7 @@ async function actionChat(body: any, caller: Caller, execId: string) {
   for (const k of ["name", "phone", "company"]) if (real(out.lead?.[k]) && !lead[k]) lp[k] = real(out.lead[k]);
   if (clean(out.lead?.email) && isEmail(clean(out.lead.email))) lp.email = clean(out.lead.email);
   const newState = mergeState(state, out);
+  if (state.scheduling) (newState as any).scheduling = state.scheduling; // v68: el estado del agendamiento no se pierde entre turnos
 
   // GL-CI-03 SERVICE MATCH (validado contra catálogo)
   // deno-lint-ignore no-explicit-any
@@ -827,6 +839,16 @@ async function actionChat(body: any, caller: Caller, execId: string) {
   if (out.out_of_catalog && !svc && !wantsBundle) { status = "out_of_scope"; leadStatus = "out_of_scope"; }
   else if (svc || wantsBundle) { status = ["pending_approval", "approved", "sent"].includes(conv.status) ? conv.status : "qualified"; leadStatus = "qualified"; }
   else if (["out_of_scope"].includes(conv.status)) { status = "qualifying"; leadStatus = "qualifying"; }
+
+  // v68: modo "service" (negocios de citas): al elegir un servicio se añaden los horarios disponibles para agendar.
+  const sc0 = schedCfg(wsRow);
+  if (sc0?.mode === "service" && svc && caller.kind === "public" && clean(lead.phone || body.lead?.phone) && !newState.proposal_ready && typeof out.reply === "string") {
+    try {
+      const lang = sc0.lang === "auto" ? detectLang(recent.filter((m) => m.role === "user").slice(-3).map((m) => m.content)) : sc0.lang;
+      const of = await offerForService(wsRow, { ...conv, state: newState }, lead.id, svc.id, svc.name, lang);
+      if (of) { out.reply = `${out.reply.trim()}\n\n${of.text}`; (newState as any).scheduling = of.sched; }
+    } catch (e) { await logError(ws, execId, "GL-CI-03", "SCHED_OFFER", (e as Error)?.message || String(e), { conversation_id: conv.id }); }
+  }
 
   const { data: asst } = await admin.from("messages").insert({
     workspace_id: ws, conversation_id: conv.id, role: "assistant", content: out.reply,

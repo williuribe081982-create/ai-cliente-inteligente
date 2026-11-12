@@ -5,6 +5,9 @@
 // el evento exista; la base de datos impide dobles reservas (restricción de exclusión en public.appointments).
 // Se activa por empresa con workspaces.settings.scheduling.enabled = true. Apagado = SIERRA igual que antes.
 // Este archivo no importa nada: index.ts le entrega sus dependencias con initScheduling().
+// v68 (2026-11-12): modo "service" para negocios de citas (spa): ofrece horarios apenas el cliente elige el servicio,
+// duración por servicio, cita presencial, textos en inglés/español según el idioma del cliente, hora local configurable
+// y número de WhatsApp propio del espacio. El modo por defecto ("after_quote", WIA) no cambia.
 
 // deno-lint-ignore-file no-explicit-any
 
@@ -41,7 +44,11 @@ export type SchedCfg = {
   slots_to_offer: number; per_day: number; virtual: boolean; presencial: boolean; address: string | null;
   respond_within_hours: number; hold_minutes: number; dry_run: boolean; meeting_title: string;
   advisors: Advisor[]; emojis: boolean; company: string; bot_whatsapp: string;
+  mode: "after_quote" | "service"; kind: "meeting" | "appointment"; lang: "es" | "en" | "auto";
+  tz_label: { es: string; en: string }; service_minutes: Record<string, number>; grid_minutes: number;
+  min_notice_minutes: number; wa_phone_id: string | null;
 };
+export type Lang = "es" | "en";
 export function schedCfg(ws: any): SchedCfg | null {
   const s = ws?.settings || {};
   const c = s.scheduling || {};
@@ -61,7 +68,8 @@ export function schedCfg(ws: any): SchedCfg | null {
     enabled: true,
     provider: c.provider === "google_bridge" ? "google_bridge" : "internal",
     timezone: c.timezone || s.timezone || "America/Bogota",
-    min_days_ahead: Number.isFinite(c.min_days_ahead) ? Math.max(1, c.min_days_ahead) : 1, // nunca el mismo día
+    // modo "after_quote": nunca el mismo día. Modo "service" (citas): puede ser hoy, con aviso mínimo.
+    min_days_ahead: Number.isFinite(c.min_days_ahead) ? Math.max(c.mode === "service" ? 0 : 1, c.min_days_ahead) : 1,
     offer_days: c.offer_days || 2,
     max_search_days: c.max_search_days || 14,
     slot_minutes: c.slot_minutes || 45,
@@ -80,7 +88,15 @@ export function schedCfg(ws: any): SchedCfg | null {
     advisors,
     emojis: s.use_emojis !== false,
     company: s.company_name || ws.name || "",
-    bot_whatsapp: String(s.bot_whatsapp || "").replace(/\D/g, ""),
+    bot_whatsapp: String(c.bot_whatsapp || s.bot_whatsapp || "").replace(/\D/g, ""),
+    mode: c.mode === "service" ? "service" : "after_quote",
+    kind: c.kind === "appointment" || c.mode === "service" ? "appointment" : "meeting",
+    lang: c.lang === "en" || c.lang === "auto" ? c.lang : "es",
+    tz_label: { es: c.tz_label?.es || "hora Colombia", en: c.tz_label?.en || "Colombia time" },
+    service_minutes: c.service_minutes && typeof c.service_minutes === "object" ? c.service_minutes : {},
+    grid_minutes: Number(c.grid_minutes) > 0 ? Number(c.grid_minutes) : 0,
+    min_notice_minutes: Number(c.min_notice_minutes) > 0 ? Number(c.min_notice_minutes) : 0,
+    wa_phone_id: c.wa_phone_id ? String(c.wa_phone_id) : null,
   };
 }
 
@@ -115,21 +131,37 @@ export function addDays(ymd: string, n: number): string {
 }
 const dowOf = (ymd: string) => { const [y, m, d] = ymd.split("-").map(Number); return new Date(Date.UTC(y, m - 1, d)).getUTCDay(); };
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
-export function fmtDay(d: Date, tz: string) {
+export function fmtDay(d: Date, tz: string, lang: Lang = "es") {
+  if (lang === "en") return new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "long", month: "long", day: "numeric" }).format(d);
   return new Intl.DateTimeFormat("es-CO", { timeZone: tz, weekday: "long", day: "numeric", month: "long" }).format(d).replace(",", "");
 }
-const fmtDayCap = (d: Date, tz: string) => cap(fmtDay(d, tz));
-export function fmtTime(d: Date, tz: string) {
+const fmtDayCap = (d: Date, tz: string, lang: Lang = "es") => cap(fmtDay(d, tz, lang));
+export function fmtTime(d: Date, tz: string, lang: Lang = "es") {
+  if (lang === "en") return new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit", hour12: true }).format(d).replace(/[\u00a0\u202f]/g, " ");
   return new Intl.DateTimeFormat("es-CO", { timeZone: tz, hour: "numeric", minute: "2-digit", hour12: true }).format(d)
     .replace(/[\u00a0\u202f]/g, " ").replace(/\s*a\.?\s*m\.?/i, " a. m.").replace(/\s*p\.?\s*m\.?/i, " p. m.");
 }
-const fmtFull = (d: Date, tz: string) => `${fmtDay(d, tz)} a las ${fmtTime(d, tz)}`;
+export const fmtFull = (d: Date, tz: string, lang: Lang = "es") => lang === "en" ? `${fmtDay(d, tz, lang)} at ${fmtTime(d, tz, lang)}` : `${fmtDay(d, tz)} a las ${fmtTime(d, tz)}`;
 /** "hoy antes de las 4:00 p. m." / "mañana antes de las 9:30 a. m." / "antes del lunes 19 de octubre a las 9:00 a. m." */
-function deadlineTxt(d: Date, tz: string, now = new Date()) {
+function deadlineTxt(d: Date, tz: string, now = new Date(), lang: Lang = "es") {
   const a = local(d, tz).ymd, t = local(now, tz).ymd;
+  if (lang === "en") {
+    if (a === t) return `today before ${fmtTime(d, tz, lang)}`;
+    if (a === addDays(t, 1)) return `tomorrow before ${fmtTime(d, tz, lang)}`;
+    return `before ${fmtFull(d, tz, lang)}`;
+  }
   if (a === t) return `hoy antes de las ${fmtTime(d, tz)}`;
   if (a === addDays(t, 1)) return `mañana antes de las ${fmtTime(d, tz)}`;
   return `antes del ${fmtFull(d, tz)}`;
+}
+/** Duración legible: 60 → "60 min", 105 → "1 h 45 min", 300 → "5 h". */
+export function fmtDur(min: number) { if (min < 90) return `${min} min`; const h = Math.floor(min / 60), m = min % 60; return m ? `${h} h ${m} min` : `${h} h`; }
+/** Idioma de un texto del cliente (inglés si predominan palabras inglesas). */
+export function detectLang(texts: string[]): Lang {
+  const t = " " + norm(texts.join(" ")).replace(/[^a-z' ]/g, " ") + " ";
+  const en = (t.match(/ (the|i|you|my|is|are|what|how|would|like|want|please|thanks|thank|hi|hello|hey|can|do|does|for|and|with|book|appointment|good|morning|afternoon|yes|need|this|that|it|to|a|of|in) /g) || []).length;
+  const es = (t.match(/ (el|la|los|las|yo|mi|es|son|que|como|quiero|quisiera|por|favor|gracias|hola|buenos|buenas|puedo|para|y|con|una|un|de|en|cita|necesito|si|este|esta|me) /g) || []).length;
+  return en > es ? "en" : "es";
 }
 
 // ---------------------------------------------------------------- cálculo de espacios libres
@@ -142,13 +174,14 @@ export type Pref = {
 /** Todos los espacios libres entre fromYmd y toYmd (incluidos) para un asesor. */
 export function freeSlots(c: SchedCfg, advisorKey: string, busy: Busy[], fromYmd: string, toYmd: string, now = new Date()): Slot[] {
   const out: Slot[] = [];
-  const dur = c.slot_minutes, buf = c.buffer_minutes, step = dur + buf;
+  const dur = c.slot_minutes, buf = c.buffer_minutes, step = c.grid_minutes || dur + buf;
+  const earliest = now.getTime() + c.min_notice_minutes * 60000;
   for (let day = fromYmd; day <= toYmd; day = addDays(day, 1)) {
     if (!c.work_days.includes(dowOf(day))) continue;
     for (const [a, b] of c.work_hours) {
       for (let m = hm(a); m + dur <= hm(b); m += step) {
         const s = zoned(day, m, c.timezone), e = new Date(s.getTime() + dur * 60000);
-        if (s.getTime() <= now.getTime()) continue;
+        if (s.getTime() <= now.getTime() || s.getTime() < earliest) continue;
         const lo = s.getTime() - buf * 60000, hi = e.getTime() + buf * 60000;
         if (busy.some((x) => x.start < hi && x.end > lo)) continue;
         out.push({ start: s.toISOString(), end: e.toISOString(), advisor: advisorKey });
@@ -207,12 +240,62 @@ export function outsideAgenda(c: SchedCfg, p: Pref): boolean {
 }
 
 // ---------------------------------------------------------------- lectura de la respuesta del cliente
-const DOW: Record<string, number> = { domingo: 0, lunes: 1, martes: 2, miercoles: 3, jueves: 4, viernes: 5, sabado: 6 };
-const MES: Record<string, number> = { enero: 1, febrero: 2, marzo: 3, abril: 4, mayo: 5, junio: 6, julio: 7, agosto: 8, septiembre: 9, setiembre: 9, octubre: 10, noviembre: 11, diciembre: 12 };
+const DOW: Record<string, number> = { domingo: 0, lunes: 1, martes: 2, miercoles: 3, jueves: 4, viernes: 5, sabado: 6, sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6 };
+const MES: Record<string, number> = { enero: 1, febrero: 2, marzo: 3, abril: 4, mayo: 5, junio: 6, julio: 7, agosto: 8, septiembre: 9, setiembre: 9, octubre: 10, noviembre: 11, diciembre: 12,
+  january: 1, february: 2, march: 3, april: 4, may: 5, june: 6, july: 7, august: 8, september: 9, october: 10, november: 11, december: 12 };
+const MONTHS_EN = "january|february|march|april|may|june|july|august|september|october|november|december";
+/** Lectura en inglés: "friday afternoon", "tomorrow at 3pm", "next week in the morning", "november 20 after 2". */
+function parsePrefEn(t: string, c: SchedCfg, today: string, p: Pref): boolean {
+  let hit = false;
+  if (/\b(in the )?morning\b|\bearly\b|\bbefore (noon|lunch)\b/.test(t)) { p.part = "am"; hit = true; }
+  if (/\b(in the )?afternoon\b|\bafter lunch\b/.test(t)) { p.part = "pm"; hit = true; }
+  if (/\b(in the )?evening\b|\btonight\b|\bat night\b/.test(t)) { p.part = "eve"; hit = true; }
+  if (/\bday after tomorrow\b/.test(t)) { p.dates = [addDays(today, 2)]; hit = true; }
+  else if (/\btomorrow\b/.test(t)) { p.dates = [addDays(today, 1)]; hit = true; }
+  if (/\btoday\b|\btonight\b/.test(t)) { p.dates = [today]; p.sameDay = true; hit = true; }
+  const wd = t.match(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b/g);
+  if (wd) {
+    const nextWeek = /\bnext (week|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/.test(t);
+    p.dates = wd.map((w0) => {
+      const w = w0.replace(/s$/, "");
+      let d = c.min_days_ahead === 0 ? today : addDays(today, 1);
+      while (dowOf(d) !== DOW[w]) d = addDays(d, 1);
+      if (nextWeek && d < addDays(today, 7 - ((dowOf(today) + 6) % 7))) d = addDays(d, 7);
+      return d;
+    });
+    hit = true;
+  }
+  const dm = t.match(new RegExp(`\\b(${MONTHS_EN})\\s+(\\d{1,2})(?:st|nd|rd|th)?\\b`)) || t.match(new RegExp(`\\b(?:the\\s+)?(\\d{1,2})(?:st|nd|rd|th)(?:\\s+of\\s+(${MONTHS_EN}))?\\b`));
+  if (dm) {
+    const monName = isNaN(Number(dm[1])) ? dm[1] : dm[2];
+    const day = Number(isNaN(Number(dm[1])) ? dm[2] : dm[1]);
+    if (day >= 1 && day <= 31) {
+      const [ty, tm] = today.split("-").map(Number);
+      let mon = monName ? MES[monName] : tm, yr = ty;
+      let cand = `${yr}-${String(mon).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+      if (cand < today) { if (monName) yr++; else { mon++; if (mon > 12) { mon = 1; yr++; } } cand = `${yr}-${String(mon).padStart(2, "0")}-${String(day).padStart(2, "0")}`; }
+      p.dates = [cand]; hit = true;
+    }
+  }
+  if (!p.dates && /\b(next week|following week)\b/.test(t)) {
+    let d = addDays(today, 1); while (dowOf(d) !== 1) d = addDays(d, 1); p.from = d; p.to = addDays(d, 6); hit = true;
+  } else if (!p.dates && /\bthis week\b/.test(t)) {
+    p.from = today; let d = today; while (dowOf(d) !== 0) d = addDays(d, 1); p.to = d; hit = true;
+  }
+  if (/\b(noon|midday)\b/.test(t)) { p.exact = 12 * 60; hit = true; }
+  const T = "(\\d{1,2})(?:[:.](\\d{2}))?\\s*(a\\.?\\s?m\\.?|p\\.?\\s?m\\.?|am|pm|in the morning|in the afternoon|in the evening)?";
+  const after = t.match(new RegExp(`\\b(?:after|from|starting at|anytime after)\\s+${T}`));
+  const before = t.match(new RegExp(`\\b(?:before|by|until|no later than)\\s+${T}`));
+  const exact = t.match(new RegExp(`\\b(?:at|around|about)\\s+${T}`)) || t.match(/\b(\d{1,2})(?:[:.](\d{2}))?\s*(a\.?\s?m\.?|p\.?\s?m\.?|am|pm)\b/);
+  if (after && !/^(?:the|a)\b/.test(after[1])) { p.after = hourOf(Number(after[1]), Number(after[2] || 0), after[3], p.part); hit = true; }
+  if (before) { p.before = hourOf(Number(before[1]), Number(before[2] || 0), before[3], p.part); hit = true; }
+  if (!after && !before && exact && Number(exact[1]) <= 23) { p.exact = hourOf(Number(exact[1]), Number(exact[2] || 0), exact[3], p.part); hit = true; }
+  return hit;
+}
 function hourOf(h: number, mm: number, mer: string | undefined, part?: string): number {
   const m = norm(mer || "");
-  if (/^p|tarde|noche/.test(m)) { if (h < 12) h += 12; }
-  else if (/^a|manana/.test(m)) { if (h === 12) h = 0; }
+  if (/^p|tarde|noche|afternoon|evening|night/.test(m)) { if (h < 12) h += 12; }
+  else if (/^a|manana|morning/.test(m)) { if (h === 12) h = 0; }
   else if (h >= 1 && h <= 6) h += 12; // "a las 3" en contexto comercial = 3 p. m.
   else if (h === 7 && (part === "pm" || part === "eve")) h = 19;
   return h * 60 + mm;
@@ -223,6 +306,9 @@ export function parsePref(text: string, c: SchedCfg, now = new Date()): Pref | n
   const today = local(now, c.timezone).ymd;
   const p: Pref = { raw: text };
   let hit = false;
+  if (c.lang !== "es" && /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today|tonight|morning|afternoon|evening|next week|this week|noon|after|before|around|january|february|march|april|june|july|august|september|october|november|december)\b|\b\d{1,2}(st|nd|rd|th)\b|\bat \d/.test(t)) {
+    return parsePrefEn(t, c, today, p) ? p : null;
+  }
   // franja del día
   if (/\b(en|por|de|a) la manana\b|\btemprano\b|\bantes del? (medio ?dia|almuerzo)\b/.test(t)) { p.part = "am"; hit = true; }
   if (/\b(en|por|de|a) la tarde\b|\bdespues del? almuerzo\b/.test(t)) { p.part = "pm"; hit = true; }
@@ -276,25 +362,28 @@ export function parsePref(text: string, c: SchedCfg, now = new Date()): Pref | n
 /** "2", "el 2", "opción 2", "la segunda", "el de las 11" → índice elegido (0-based) o -1. */
 export function parseChoice(text: string, options: Slot[], tz: string): number {
   const t = norm(text).replace(/[.!?¡¿,]/g, " ").trim();
-  const ord: Record<string, number> = { primero: 1, primera: 1, uno: 1, segundo: 2, segunda: 2, dos: 2, tercero: 3, tercera: 3, tres: 3, cuarto: 4, cuarta: 4, cuatro: 4, quinto: 5, quinta: 5, cinco: 5 };
+  const ord: Record<string, number> = { primero: 1, primera: 1, uno: 1, segundo: 2, segunda: 2, dos: 2, tercero: 3, tercera: 3, tres: 3, cuarto: 4, cuarta: 4, cuatro: 4, quinto: 5, quinta: 5, cinco: 5,
+    first: 1, one: 1, "1st": 1, second: 2, two: 2, "2nd": 2, third: 3, three: 3, "3rd": 3, fourth: 4, four: 4, "4th": 4, fifth: 5, five: 5, "5th": 5 };
+  const en = t.match(/^(?:(?:yes|yeah|yep|ok|okay|sure|great|perfect|cool)\s+)?(?:(?:i(?:'| wi)ll take|i want|i'd like|i prefer|i choose|let's do|book|please book|go with)\s+)?(?:the\s+|option\s+|number\s+|#)?(\d|first|second|third|fourth|fifth|one|two|three|four|five|1st|2nd|3rd|4th|5th)(?:\s+(?:one|option|please|thanks|thank you))*$/);
+  if (en) { const n = ord[en[1]] || Number(en[1]); return n >= 1 && n <= options.length ? n - 1 : -1; }
   const m = t.match(/^(?:(?:si|ok|dale|listo|perfecto|claro)\s+)?(?:(?:me sirve|prefiero|quiero|escojo|elijo|tomo|agendame|agenda)\s+)?(?:el|la)?\s*(?:opcion|numero|#|espacio|horario)?\s*(\d|primer[oa]?|segund[oa]|tercer[oa]?|cuart[oa]|quint[oa]|uno|dos|tres|cuatro|cinco)\s*(?:por favor|porfa|gracias)?$/);
   if (m) { const n = ord[m[1].replace(/^tercer$/, "tercero").replace(/^primer$/, "primero")] || Number(m[1]); return n >= 1 && n <= options.length ? n - 1 : -1; }
   // "el de las 11", "11 am", "a las 3"
   const h = t.match(/\b(?:las?\s+)?(\d{1,2})(?:[:.](\d{2}))?\s*(a\.?\s?m\.?|p\.?\s?m\.?|am|pm)?\b/);
-  const mentionsDay = /\b(lunes|martes|miercoles|jueves|viernes|sabado|domingo|manana|hoy|semana|de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre))\b/.test(t.replace(/\b(de|en|por) la manana\b/g, "")) || /\b(el|dia)\s+\d{1,2}\b(?!\s*(:|am|pm|a\.|p\.))/.test(t);
-  if (h && !mentionsDay && /\b(las?|am|pm|a\.? ?m|p\.? ?m|el de)\b/.test(t) && t.split(" ").length <= 7) {
+  const mentionsDay = /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|tomorrow|today|week|lunes|martes|miercoles|jueves|viernes|sabado|domingo|manana|hoy|semana|de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre))\b/.test(t.replace(/\b(de|en|por) la manana\b/g, "")) || /\b(el|dia)\s+\d{1,2}\b(?!\s*(:|am|pm|a\.|p\.))/.test(t);
+  if (h && !mentionsDay && /\b(las?|am|pm|a\.? ?m|p\.? ?m|el de|at|the)\b/.test(t) && t.split(" ").length <= 7) {
     const want = hourOf(Number(h[1]), Number(h[2] || 0), h[3]);
     const idx = options.map((o, i) => ({ i, m: local(new Date(o.start), tz).minutes })).filter((x) => x.m === want);
     if (idx.length === 1) return idx[0].i;
   }
   return -1;
 }
-export const isDecline = (text: string) => /^(no|nop|nel)\b[.!]?$|\b(no gracias|no,? gracias|no me interesa|ahora no|por ahora no|no por ahora|mas adelante|despues te (escribo|aviso|confirmo)|luego te (escribo|aviso|confirmo)|yo te (escribo|aviso|confirmo)|lo (voy a )?pienso|no necesito|no hace falta)\b/.test(norm(text));
-export const wantsScheduling = (text: string) => /\b(agend\w*|programar (una |la )?(reunion|cita|llamada)|reunirnos|(una|la|mi) (reunion|cita|videollamada)|hablar con (el|un|una) asesor\w*)\b/.test(norm(text));
-export const wantsOther = (text: string) => /\b(no me sirve\w*|ninguno|ninguna|otro dia|otra hora|otros horarios|otras opciones|no puedo (ese|esos|esa|esas)|no me queda\w*)\b/.test(norm(text));
-export const wantsCancel = (text: string) => /\b(cancel(ar|a|o)|anular|ya no (puedo|podre)|no (puedo|podre) (asistir|ir|conectarme))\b/.test(norm(text));
-export const wantsReschedule = (text: string) => /\b(reprogram|cambiar (la |el )?(cita|reunion|hora|fecha|dia|horario)|mover (la |el )?(cita|reunion|horario)|otro (dia|horario)|otra (hora|fecha))/.test(norm(text));
-const isYes = (text: string) => /^(si|sii+|claro|dale|ok|okay|listo|perfecto|de una|me sirve|esta bien|confirmo|acepto|sirve)\b/.test(norm(text));
+export const isDecline = (text: string) => /^(no|nop|nel|nope)\b[.!]?$|\b(no thanks|no thank you|not now|maybe later|not interested|i'll think|i will think|i'll let you know|later then|no gracias|no,? gracias|no me interesa|ahora no|por ahora no|no por ahora|mas adelante|despues te (escribo|aviso|confirmo)|luego te (escribo|aviso|confirmo)|yo te (escribo|aviso|confirmo)|lo (voy a )?pienso|no necesito|no hace falta)\b/.test(norm(text));
+export const wantsScheduling = (text: string) => /\b(book(ing)?|appointment|schedule|reserve|reservation|availability|available times|agend\w*|programar (una |la )?(reunion|cita|llamada)|reunirnos|(una|la|mi) (reunion|cita|videollamada)|hablar con (el|un|una) asesor\w*)\b/.test(norm(text));
+export const wantsOther = (text: string) => /\b(none of (these|those|them)|another (day|time)|other (times|options|days)|(doesn'?t|don'?t|does not|do not) work|can'?t make|no me sirve\w*|ninguno|ninguna|otro dia|otra hora|otros horarios|otras opciones|no puedo (ese|esos|esa|esas)|no me queda\w*)\b/.test(norm(text));
+export const wantsCancel = (text: string) => /\b(cancel(ar|a|o|led)?|can'?t (make it|come|go)|anular|ya no (puedo|podre)|no (puedo|podre) (asistir|ir|conectarme))\b/.test(norm(text));
+export const wantsReschedule = (text: string) => /\b(reschedul|change (my |the )?(appointment|time|date|day)|move (my |the )?appointment|reprogram|cambiar (la |el )?(cita|reunion|hora|fecha|dia|horario)|mover (la |el )?(cita|reunion|horario)|otro (dia|horario)|otra (hora|fecha))/.test(norm(text));
+const isYes = (text: string) => /^(yes|yeah|yep|sure|sounds good|ok|okay|great|perfect|confirm|si|sii+|claro|dale|ok|okay|listo|perfecto|de una|me sirve|esta bien|confirmo|acepto|sirve)\b/.test(norm(text));
 
 // ---------------------------------------------------------------- calendario (proveedor)
 async function bridge(action: string, payload: Record<string, unknown>, timeoutMs = 9000): Promise<any> {
@@ -351,23 +440,69 @@ export async function defaultOffer(ws: any, c: SchedCfg): Promise<Slot[]> {
 
 // ---------------------------------------------------------------- mensajes
 const NUM = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣"];
-function listSlots(c: SchedCfg, opts: Slot[]): string {
+function listSlots(c: SchedCfg, opts: Slot[], lang: Lang = "es"): string {
   const out: string[] = [];
   let lastDay = "";
   opts.forEach((s, i) => {
     const d = new Date(s.start);
-    const day = fmtDayCap(d, c.timezone);
+    const day = fmtDayCap(d, c.timezone, lang);
     if (day !== lastDay) { out.push((out.length ? "\n" : "") + `*${day}*`); lastDay = day; }
-    out.push(`${c.emojis ? NUM[i] : `${i + 1}.`} ${fmtTime(d, c.timezone)}`);
+    out.push(`${c.emojis ? NUM[i] : `${i + 1}.`} ${fmtTime(d, c.timezone, lang)}`);
   });
   return out.join("\n");
 }
-const modalityTxt = (c: SchedCfg) => (c.virtual ? "Google Meet" : c.address ? "presencial" : "");
-function offerText(c: SchedCfg, opts: Slot[], intro: string): string {
+const modalityTxt = (c: SchedCfg, lang: Lang = "es") => (c.virtual ? "Google Meet" : c.address ? (lang === "en" ? "in person" : "presencial") : "");
+function offerText(c: SchedCfg, opts: Slot[], intro: string, lang: Lang = "es"): string {
   const e = c.emojis;
+  if (lang === "en") return `${intro}\n\n${listSlots(c, opts, lang)}\n\nReply with the number you prefer. If another day or time works better, just tell me${e ? " 😊" : "."}`;
   return `${intro}\n\n${listSlots(c, opts)}\n\nEscríbeme el número del que prefieras. Si te queda mejor otro día u hora, dímelo${e ? " 😊" : "."}`;
 }
-const meetingDetails = (c: SchedCfg) => [`hora Colombia`, modalityTxt(c), `${c.slot_minutes} min`].filter(Boolean).join(" · ");
+const meetingDetails = (c: SchedCfg, lang: Lang = "es") => [c.tz_label[lang], modalityTxt(c, lang), c.mode === "service" ? fmtDur(c.slot_minutes) : `${c.slot_minutes} min`].filter(Boolean).join(" · ");
+/** Textos al cliente. Modo "after_quote" en español = textos originales de WIA (sin cambios). */
+function W(c: SchedCfg, lang: Lang) {
+  const en = lang === "en", ap = c.kind === "appointment";
+  const n = en ? (ap ? "appointment" : "meeting") : (ap ? "cita" : "reunión");
+  const withWho = en ? (ap ? "" : " with the advisor") : (ap ? "" : " con el asesor");
+  const art = en ? "your" : "tu";
+  const kw = en ? "*book*" : "*agendar*";
+  return {
+    n, kw,
+    slowConfirm: en ? `Confirming your ${n}, one moment…` : `Estoy confirmando tu ${n}${withWho}, dame unos segundos…`,
+    lateFail: en ? `Sorry, that time was just taken or I couldn't confirm it. Write ${kw} and I'll show you new options.` : `Lo siento, ese horario acaba de ocuparse o no pude confirmarlo. Escríbeme ${kw} y te muestro nuevas opciones.`,
+    whyErr: en ? "I couldn't confirm that time on the calendar right now." : "No pude confirmar ese horario en el calendario en este momento.",
+    whyTaken: en ? "That time was just taken." : "Ese horario acaba de ocuparse.",
+    nowAvail: en ? "These are the times available now:" : "Estos son los espacios disponibles ahora:",
+    told: en ? (ap ? "I let our team know so they can contact you and set a time." : "I let the advisor know so they can contact you and agree on a time.") : (ap ? "Ya le avisé a nuestro equipo para que te contacte y acuerden la hora." : "Ya le avisé al asesor para que te contacte y acuerden la hora."),
+    already: (when: string, meet: string) => en ? `You already have ${art} ${n} booked for *${when}*${meet}. Want to change it? Write *change* or *cancel*.` : `Ya tienes tu ${n} agendada para el *${when}*${meet}. ¿Quieres cambiarla? Escríbeme *cambiar* o *cancelar*.`,
+    cancelled: (when: string) => en ? `Done, I cancelled your ${n} on ${when} 👍\nWhenever you want to book again, just write ${kw}.` : `Listo, cancelé tu ${n} del ${when} 👍\nCuando quieras agendar otra, escríbeme ${kw}.`,
+    retake: en ? `Got it. Whenever you want, write ${kw} and we'll find another time.` : `Entendido. Cuando quieras retomar, escríbeme ${kw} y buscamos otro horario.`,
+    declined: (name: string) => en ? `Got it${name ? ", " + name : ""}. Whenever you want to book ${art} ${n}, just write ${kw} in this chat.` : `Entendido${name ? ", " + name : ""}. Cuando quieras agendar la ${n}${withWho}, escríbeme ${kw} por este chat.`,
+    askOther: en ? `Of course, let's find another time. Which day and time of day work best for you? For example: *Friday afternoon* or *next week in the morning*.` : `Claro, buscamos otro horario. ¿Qué día y franja te quedan mejor? Por ejemplo: *el martes en la tarde* o *la próxima semana en la mañana*.`,
+    sameDay: (d: string) => en ? `We book from the next day. These are the closest times (${d}):` : `Para preparar bien la ${n} agendamos desde el día siguiente. Estos son los espacios más cercanos (${d}):`,
+    sameDayAsk: en ? `We book from the next day. Which day works for you?` : `Para preparar bien la ${n} agendamos desde el día siguiente. ¿Qué día te queda bien?`,
+    outsideAsk: en ? `That day is outside our usual schedule, but I can check it with the team. What time would work for you?` : `Ese día está fuera de la agenda habitual, pero puedo consultarlo con el asesor. ¿A qué hora te quedaría bien?`,
+    released: en ? "Done, I released your previous time. " : "Listo, liberé tu horario anterior. ",
+    have: en ? "These are the times I have:" : "Estos son los espacios que tengo:",
+    closest: en ? "I don't have that exact time. The closest options are:" : "En ese horario no tengo espacio. Lo más cercano es:",
+    none2w: en ? `I can't find times in the next two weeks with that preference. If you like, I can check directly with the team: tell me the day and time that work for you.` : `No encuentro espacios en las próximas dos semanas con esa preferencia. Si quieres, se lo consulto directamente al asesor: dime el día y la hora que te sirven.`,
+    releasedOffer: (d: string) => en ? `Done, I released your previous time. These are the available times (${d}):` : `Listo, liberé tu horario anterior. Estos son los espacios disponibles (${d}):`,
+    releasedAsk: en ? `Done, I released your previous time. Tell me which day and time work for you.` : `Listo, liberé tu horario anterior. Dime qué día y hora te sirven y lo consulto con el asesor.`,
+    kwOffer: (d: string) => en ? `${c.emojis ? "📅 " : ""}With pleasure! These are the available times for ${art} ${n} (${d}):` : `${c.emojis ? "📅 " : ""}¡Con gusto! Estos son los espacios disponibles para tu ${n}${withWho} (${d}):`,
+    kwNone: en ? `I don't see free times in the next few days. Tell me which day and time work for you and I'll check with the team.` : `En los próximos días no veo espacios libres en la agenda. Dime qué día y hora te sirven y se lo consulto al asesor.`,
+    calErr: en ? `I had a problem checking the schedule right now. I let our team know so they can contact you and set your ${n}.` : `Tuve un problema consultando la agenda en este momento. Ya le avisé al asesor para que te contacte y acuerden la ${n}.`,
+    specialPast: en ? `We book from the next day. Which other day works for you?` : `Para preparar bien la ${n} agendamos desde el día siguiente. ¿Qué otro día te sirve?`,
+    special: (when: string, by: string) => en ? `That time (${when}) is outside our usual schedule, but I already asked the team. ${c.emojis ? "🙌 " : ""}I'll confirm here *${by}*` : `Ese horario (${when}) está fuera de la agenda habitual, pero ya se lo solicité al asesor. ${c.emojis ? "🙌 " : ""}Te confirmo por aquí *${by}*`,
+    offerAfterQuote: (d: string) => en ? `${c.emojis ? "📅 " : ""}Would you like to book ${art} ${n}? These are the available times (${d}):` : (ap ? `${c.emojis ? "📅 " : ""}¿Quieres agendar tu ${n}? Estos son los horarios disponibles (${d}):` : `${c.emojis ? "📅 " : ""}Si quieres resolver dudas con un asesor, agenda tu reunión ahora (${d}):`),
+    offerAfterQuoteNone: en ? `${c.emojis ? "📅 " : ""}Whenever you want to book ${art} ${n}, write ${kw} and I'll show you the available times.` : (ap ? `${c.emojis ? "📅 " : ""}Cuando quieras agendar tu ${n}, escríbeme ${kw} y te muestro los horarios disponibles.` : `${c.emojis ? "📅 " : ""}Si quieres resolver dudas con un asesor, escríbeme *agendar* y te muestro los horarios disponibles.`),
+    serviceOffer: (svc: string, d: string) => en ? `${c.emojis ? "📅 " : ""}Would you like to book *${svc}*? These are the next available times (${d}):` : `${c.emojis ? "📅 " : ""}¿Quieres agendar *${svc}*? Estos son los próximos horarios disponibles (${d}):`,
+    serviceNone: (svc: string) => en ? `${c.emojis ? "📅 " : ""}If you'd like to book *${svc}*, tell me which day and time work for you and I'll check the schedule.` : `${c.emojis ? "📅 " : ""}Si quieres agendar *${svc}*, dime qué día y hora te sirven y reviso la agenda.`,
+    goodNews: en ? `${c.emojis ? "🙌 " : ""}Good news! Your requested time was accepted.\n\n` : `${c.emojis ? "🙌 " : ""}¡Buenas noticias! El asesor aceptó tu horario.\n\n`,
+    advDecl: (d: string) => en ? `That time isn't available, but these are (${d}):` : `El asesor no tiene disponible ese horario, pero estos espacios sí (${d}):`,
+    advDeclAsk: en ? `That time isn't available. Tell me another day and time that work for you and I'll check.` : `El asesor no tiene disponible ese horario. Dime otro día y hora que te sirvan y se lo consulto.`,
+    advPropose: (when: string) => en ? `We can offer you *${when}* (${c.tz_label.en}). Does it work for you? Reply *YES* to confirm or tell me another option.` : `El asesor te propone reunirse el *${when}* (${c.tz_label.es}). ¿Te sirve? Responde *SÍ* para confirmarla o dime otra opción.`,
+    overdue: (d: string) => en ? `Your requested time is still being reviewed. Meanwhile, so you don't have to wait, these are the closest free times (${d}):` : `El asesor aún no confirma el horario que pediste; sigue en revisión. Mientras tanto, para no hacerte esperar, estos son los espacios libres más cercanos (${d}):`,
+  };
+}
 
 // ---------------------------------------------------------------- persistencia del estado
 async function loadConv(id: string) { const { data } = await D.admin.from("conversations").select("*").eq("id", id).maybeSingle(); return data; }
@@ -387,8 +522,9 @@ async function claim(key: string, ws: string, payload: Record<string, unknown> =
 async function sendClient(wsRow: any, c: SchedCfg, phone: string, text: string, convId: string | null, meta: Record<string, unknown> = {}) {
   if (convId) await logMsg(wsRow.id, convId, "assistant", text, { pushed: true, ...meta });
   if (c.dry_run) { await D.audit(wsRow.id, "sched_wa_dry_run", "conversation", convId, { to: phone, text }); return { ok: true, dry: true }; }
-  const cr = await D.waCreds();
-  if (!cr || !phone) return { ok: false };
+  const cr0 = await D.waCreds();
+  if (!cr0 || !phone) return { ok: false };
+  const cr = c.wa_phone_id ? { ...cr0, phoneId: c.wa_phone_id } : cr0; // número propio del espacio (p. ej. demo)
   const r = await D.waPost(cr, { to: String(phone).replace(/\D/g, ""), type: "text", text: { preview_url: false, body: text } });
   if (!r.ok) await D.audit(wsRow.id, "sched_wa_failed", "conversation", convId, { status: r.status, body: r.body });
   return r;
@@ -411,6 +547,37 @@ async function contextByPhone(ws: string, phone: string) {
   ]);
   return { proposal: p, lead, conv, appt };
 }
+const ACTIVE = ["hold", "confirmed", "requested", "proposed"];
+/** Modo "service": el contexto es la conversación reciente del cliente (no hace falta cotización). */
+async function contextService(ws: string, phone: string) {
+  const { data: leads } = await D.admin.from("leads").select("id").eq("workspace_id", ws).eq("phone", phone).limit(50);
+  const ids = (leads || []).map((x: any) => x.id);
+  if (!ids.length) return null;
+  const since = new Date(Date.now() - 3 * 86400000).toISOString();
+  const { data: conv } = await D.admin.from("conversations").select("*").eq("workspace_id", ws).in("lead_id", ids).gte("updated_at", since)
+    .order("updated_at", { ascending: false }).limit(1).maybeSingle();
+  if (!conv) return null;
+  const [{ data: lead }, { data: p }, { data: appt }] = await Promise.all([
+    D.admin.from("leads").select("*").eq("id", conv.lead_id).single(),
+    D.admin.from("proposals").select("id,lead_id,conversation_id,quote,diagnosis,share_token,email_status,created_at").eq("conversation_id", conv.id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
+    D.admin.from("appointments").select("*").eq("workspace_id", ws).in("lead_id", ids).in("status", ACTIVE).gte("ends_at", new Date().toISOString()).order("created_at", { ascending: false }).limit(1).maybeSingle(),
+  ]);
+  return { proposal: pseudoProposal(conv, p), lead, conv, appt };
+}
+function pseudoProposal(conv: any, p: any) {
+  const sched = conv?.state?.scheduling || {};
+  if (p) return { ...p, conversation_id: p.conversation_id || conv?.id };
+  return { id: null, lead_id: conv?.lead_id || null, conversation_id: conv?.id || null, quote: { solucion: sched.service_name || null }, diagnosis: conv?.state?.diagnosis || {}, share_token: null };
+}
+/** Idioma de la conversación (modo auto): el guardado en el estado, o el de los últimos mensajes del cliente. */
+async function convLang(c: SchedCfg, convId: string | null, sched: any, fallbackText = ""): Promise<Lang> {
+  if (c.lang === "en" || c.lang === "es") return c.lang;
+  if (sched?.lang === "en" || sched?.lang === "es") return sched.lang;
+  let texts = [fallbackText];
+  if (convId) { const { data } = await D.admin.from("messages").select("content").eq("conversation_id", convId).eq("role", "user").order("created_at", { ascending: false }).limit(4); texts = [...texts, ...(data || []).map((m: any) => m.content)]; }
+  return detectLang(texts);
+}
+const withMinutes = (c: SchedCfg, mins: number | null | undefined): SchedCfg => (mins && mins > 0 ? { ...c, slot_minutes: mins } : c);
 
 // ---------------------------------------------------------------- reserva
 type BookResult = { ok: true; appt: any } | { ok: false; reason: "taken" | "busy" | "error"; error?: string };
@@ -489,22 +656,30 @@ async function book(wsRow: any, c: SchedCfg, ctx: any, slot: { start: string; en
   bg(notifyAdvisorBooked(wsRow, c, ctx, appt));
   return { ok: true, appt };
 }
-function confirmText(c: SchedCfg, appt: any, lead: any) {
-  const d = new Date(appt.starts_at), e = c.emojis;
-  const where = appt.meet_url ? `${e ? "💻 " : ""}Google Meet: ${appt.meet_url}` : appt.location ? `${e ? "📍 " : ""}${appt.location}` : c.virtual ? `${e ? "💻 " : ""}El enlace de la videollamada llegará a tu correo.` : "";
-  const mail = lead?.email && c.provider === "google_bridge" ? `\nTe envié la invitación a ${lead.email} para que quede en tu calendario.` : "";
-  return `${e ? "✅ " : ""}¡Reunión confirmada!\n${e ? "📅 " : ""}${fmtDayCap(d, c.timezone)}, ${fmtTime(d, c.timezone)} (hora Colombia, ${c.slot_minutes} min)\n${where}${mail}\n\nSi necesitas cambiarla, escríbeme por aquí.`;
+function confirmText(c: SchedCfg, appt: any, lead: any, lang: Lang = "es", svcName: string | null = null) {
+  const d = new Date(appt.starts_at), e = c.emojis, en = lang === "en";
+  const mins = Math.round((Date.parse(appt.ends_at) - Date.parse(appt.starts_at)) / 60000) || c.slot_minutes;
+  const where = appt.meet_url ? `${e ? "💻 " : ""}Google Meet: ${appt.meet_url}` : appt.location ? `${e ? "📍 " : ""}${appt.location}` : c.virtual ? `${e ? "💻 " : ""}${en ? "The video call link will arrive in your email." : "El enlace de la videollamada llegará a tu correo."}` : "";
+  const mail = lead?.email && c.provider === "google_bridge" ? (en ? `\nI sent the invitation to ${lead.email} so it's in your calendar.` : `\nTe envié la invitación a ${lead.email} para que quede en tu calendario.`) : "";
+  if (c.mode !== "service") return `${e ? "✅ " : ""}¡Reunión confirmada!\n${e ? "📅 " : ""}${fmtDayCap(d, c.timezone)}, ${fmtTime(d, c.timezone)} (${c.tz_label.es}, ${c.slot_minutes} min)\n${where}${mail}\n\nSi necesitas cambiarla, escríbeme por aquí.`;
+  const head = en ? "Your appointment is confirmed!" : "¡Tu cita quedó confirmada!";
+  const svc = svcName ? `${e ? "💆 " : ""}${svcName}\n` : "";
+  const tail = lead?.email
+    ? (en ? "If you need to change it, just write me here." : "Si necesitas cambiarla, escríbeme por aquí.")
+    : (en ? "If you'd like your personalized plan and confirmation by email, just send me your full name and email. If you need to change the appointment, write me here." : "Si quieres recibir tu plan personalizado y la confirmación por correo, envíame tu nombre completo y tu correo. Si necesitas cambiar la cita, escríbeme por aquí.");
+  return `${e ? "✅ " : ""}${head}\n${svc}${e ? "📅 " : ""}${fmtDayCap(d, c.timezone, lang)}, ${fmtTime(d, c.timezone, lang)} (${c.tz_label[lang]}, ${fmtDur(mins)})\n${where}${mail}\n\n${tail}`;
 }
 async function notifyAdvisorBooked(wsRow: any, c: SchedCfg, ctx: any, appt: any) {
   if (c.dry_run) { await D.audit(wsRow.id, "sched_advisor_dry_run", "appointment", appt.id, { kind: "booked" }); return; }
   const d = new Date(appt.starts_at);
-  const head = `📅 Reunión agendada: ${fmtFull(d, c.timezone)}`;
+  const NA = c.kind === "appointment" ? "Cita" : "Reunión";
+  const head = `📅 ${NA} agendada: ${fmtFull(d, c.timezone)}`;
   const p = ctx.proposal, l = ctx.lead || {}, q = p.quote || {};
   const rm = await roadmapUrlOf(wsRow, p);
   await Promise.allSettled([
     D.waAdvisor(wsRow, p, l, head + (appt.meet_url ? ` · Meet: ${appt.meet_url}` : "")),
-    D.mailAdvisor(wsRow, `📅 ${l.name || "Cliente"} agendó reunión — ${fmtFull(d, c.timezone)} (${D.quoteCode(p.id)})`,
-      fichaHtml(c, ctx, `📅 Reunión agendada`, `<b>${D.escH(fmtFull(d, c.timezone))}</b> (hora Colombia, ${c.slot_minutes} min) · ${appt.meet_url ? `<a href="${D.escH(appt.meet_url)}">Google Meet</a>` : D.escH(appt.location || "virtual")}${appt.calendar_link ? ` · <a href="${D.escH(appt.calendar_link)}">Ver en calendario</a>` : ""}`, rm, q)),
+    D.mailAdvisor(wsRow, `📅 ${l.name || "Cliente"} agendó ${NA.toLowerCase()} — ${fmtFull(d, c.timezone)}${p.id ? ` (${D.quoteCode(p.id)})` : q.solucion ? ` (${q.solucion})` : ""}`,
+      fichaHtml(c, ctx, `📅 ${NA} agendada`, `<b>${D.escH(fmtFull(d, c.timezone))}</b> (${D.escH(c.tz_label.es)}, ${fmtDur(Math.round((Date.parse(appt.ends_at) - Date.parse(appt.starts_at)) / 60000))}) · ${appt.meet_url ? `<a href="${D.escH(appt.meet_url)}">Google Meet</a>` : D.escH(appt.location || "virtual")}${appt.calendar_link ? ` · <a href="${D.escH(appt.calendar_link)}">Ver en calendario</a>` : ""}`, rm, q)),
   ]);
 }
 function fichaHtml(c: SchedCfg, ctx: any, title: string, when: string, rm: string | null, q: any, extra = "") {
@@ -517,7 +692,7 @@ function fichaHtml(c: SchedCfg, ctx: any, title: string, when: string, rm: strin
     row("Correo", E(l.email || "—")),
     row("Servicio", E(q.solucion || "—")),
     row("Necesidad", E(dg.qualification?.need || "—")),
-    row("Cotización", `${E(D.quoteCode(p.id))} · ${E(q.inversion?.display || "—")}`),
+    p.id ? row("Cotización", `${E(D.quoteCode(p.id))} · ${E(q.inversion?.display || "—")}`) : "",
     rm ? row("Roadmap", `<a href="${E(rm)}">Ver roadmap del cliente</a>`) : "",
     (dg.missing || []).length ? row("Por aclarar", E((dg.missing || []).slice(0, 4).join("; "))) : "",
     ctx.conv?.summary ? row("Resumen", E(ctx.conv.summary)) : "",
@@ -545,8 +720,9 @@ export function businessDeadline(c: SchedCfg, hours: number, now = new Date()): 
 }
 async function createSpecialRequest(wsRow: any, c: SchedCfg, ctx: any, start: Date) {
   const a = c.advisors[0];
-  await D.admin.from("appointments").update({ status: "cancelled", updated_at: new Date().toISOString() }).eq("proposal_id", ctx.proposal.id).in("status", ["requested", "proposed", "hold"]);
-  const end = new Date(start.getTime() + c.slot_minutes * 60000);
+  const q0 = D.admin.from("appointments").update({ status: "cancelled", updated_at: new Date().toISOString() });
+  await (ctx.proposal.id ? q0.eq("proposal_id", ctx.proposal.id) : q0.eq("conversation_id", ctx.proposal.conversation_id)).in("status", ["requested", "proposed", "hold"]);
+  const end = new Date(start.getTime() + c.slot_minutes * 60000); // c ya trae la duración del servicio
   const respondBy = businessDeadline(c, c.respond_within_hours);
   const { data: appt, error } = await D.admin.from("appointments").insert({
     workspace_id: wsRow.id, lead_id: ctx.lead?.id, proposal_id: ctx.proposal.id, conversation_id: ctx.proposal.conversation_id,
@@ -586,22 +762,59 @@ export async function offerAfterQuote(wsRow: any, proposalId: string, delayMs: n
   const { data: p } = await D.admin.from("proposals").select("id,lead_id,conversation_id,quote,diagnosis,share_token").eq("id", proposalId).single();
   const { data: lead } = await D.admin.from("leads").select("*").eq("id", p.lead_id).single();
   if (!lead?.phone || !p.conversation_id) return;
+  const conv0 = await loadConv(p.conversation_id);
+  const sched0 = conv0?.state?.scheduling || {};
+  if (c.mode === "service") {
+    // ya agendó (o tiene una solicitud en curso): no se vuelve a ofrecer
+    const { data: ex } = await D.admin.from("appointments").select("id").eq("workspace_id", wsRow.id).eq("lead_id", p.lead_id).in("status", ACTIVE).gte("ends_at", new Date().toISOString()).limit(1).maybeSingle();
+    if (ex) return;
+  }
+  const lang = await convLang(c, p.conversation_id, sched0);
+  const svcId = (p as any).service_id || conv0?.state?.chosen_service_id || null;
+  const mins = c.mode === "service" ? (sched0.minutes || (svcId ? c.service_minutes[svcId] : null)) : null;
+  const cc = withMinutes(c, mins);
   let opts: Slot[] = [];
-  try { opts = await defaultOffer(wsRow, c); } catch (e) { await D.audit(wsRow.id, "sched_offer_error", "proposal", p.id, { error: (e as Error)?.message }); }
+  try { opts = await defaultOffer(wsRow, cc); } catch (e) { await D.audit(wsRow.id, "sched_offer_error", "proposal", p.id, { error: (e as Error)?.message }); }
   const wait = delayMs - (Date.now() - t0);
   if (wait > 0) await sleep(wait);
   if (!(await claim(`offer:${p.id}`, wsRow.id, { delay: delayMs }))) return; // ya se ofreció
-  const e = c.emojis;
+  const w = W(cc, lang);
+  const keep = { lang, minutes: mins || undefined, service_id: sched0.service_id || svcId || undefined, service_name: sched0.service_name || p.quote?.solucion || undefined };
   let text: string;
   if (opts.length) {
-    text = offerText(c, opts, `${e ? "📅 " : ""}Si quieres resolver dudas con un asesor, agenda tu reunión ahora (${meetingDetails(c)}):`);
-    await saveSched(p.conversation_id, { step: "offered", options: opts, offered_at: new Date().toISOString(), round: 1, proposal_id: p.id });
+    text = offerText(cc, opts, w.offerAfterQuote(meetingDetails(cc, lang)), lang);
+    await saveSched(p.conversation_id, { ...keep, step: "offered", options: opts, offered_at: new Date().toISOString(), round: 1, proposal_id: p.id });
   } else {
-    text = `${e ? "📅 " : ""}Si quieres resolver dudas con un asesor, escríbeme *agendar* y te muestro los horarios disponibles.`;
-    await saveSched(p.conversation_id, { step: "idle", proposal_id: p.id });
+    text = w.offerAfterQuoteNone;
+    await saveSched(p.conversation_id, { ...keep, step: "idle", proposal_id: p.id });
   }
   await sendClient(wsRow, c, lead.phone, text, p.conversation_id, { kind: "offer" });
   await D.audit(wsRow.id, "sched_offered", "proposal", p.id, { options: opts.length, ms: Date.now() - t0 });
+}
+
+// ---------------------------------------------------------------- modo "service": oferta al elegir el servicio
+/**
+ * Se llama cuando el cliente acaba de elegir un servicio. Devuelve el texto de horarios para añadir a la respuesta
+ * y el estado de agendamiento a guardar en la conversación; null si no corresponde ofrecer.
+ */
+export async function offerForService(wsRow: any, conv: any, leadId: string | null, serviceId: string, serviceName: string, lang: Lang): Promise<{ text: string; sched: any } | null> {
+  const c0 = schedCfg(wsRow);
+  if (!c0 || c0.mode !== "service") return null;
+  const sched = conv?.state?.scheduling || {};
+  if (sched.service_id === serviceId && ["offered", "ask_time", "special_pending", "proposed", "confirmed", "booking", "declined"].includes(sched.step)) return null;
+  if (leadId) {
+    const { data: ex } = await D.admin.from("appointments").select("id").eq("workspace_id", wsRow.id).eq("lead_id", leadId).in("status", ACTIVE).gte("ends_at", new Date().toISOString()).limit(1).maybeSingle();
+    if (ex) return null;
+  }
+  const mins = c0.service_minutes[serviceId] || null;
+  const c = withMinutes(c0, mins);
+  const w = W(c, lang);
+  const base = { lang, service_id: serviceId, service_name: serviceName, minutes: c.slot_minutes, proposal_id: null };
+  let opts: Slot[] = [];
+  try { opts = await defaultOffer(wsRow, c); } catch (e) { await D.audit(wsRow.id, "sched_offer_error", "conversation", conv?.id || null, { error: (e as Error)?.message }); }
+  await D.audit(wsRow.id, "sched_offered", "conversation", conv?.id || null, { options: opts.length, service_id: serviceId, mode: "service" });
+  if (opts.length) return { text: offerText(c, opts, w.serviceOffer(serviceName, meetingDetails(c, lang)), lang), sched: { ...base, step: "offered", options: opts, offered_at: new Date().toISOString(), round: 1 } };
+  return { text: w.serviceNone(serviceName), sched: { ...base, step: "offered", options: [], offered_at: new Date().toISOString(), round: 1 } };
 }
 
 // ---------------------------------------------------------------- interceptor de la conversación
@@ -611,11 +824,13 @@ export type Turn = { reply: string; conversation_id: string; lead: any };
  * null para que la conversación siga su flujo normal (IA).
  */
 export async function handleTurn(wsRow: any, phone: string, message: string): Promise<Turn | null> {
-  const c = schedCfg(wsRow);
-  if (!c || !phone) return null;
-  const ctx = await contextByPhone(wsRow.id, phone);
+  const c0 = schedCfg(wsRow);
+  if (!c0 || !phone) return null;
+  const ctx = c0.mode === "service" ? await contextService(wsRow.id, phone) : await contextByPhone(wsRow.id, phone);
   if (!ctx) return null;
   const sched = ctx.conv?.state?.scheduling || {};
+  const svcMins = c0.mode === "service" ? (sched.minutes || c0.service_minutes[ctx.conv?.state?.chosen_service_id] || null) : null;
+  const c = withMinutes(c0, svcMins);
   const offerFresh = sched.offered_at && Date.now() - Date.parse(sched.offered_at) < 3 * 86400000;
   const active = ["offered", "ask_time", "proposed", "special_pending"].includes(sched.step) && (offerFresh || sched.step === "special_pending" || sched.step === "proposed");
   const appt = ctx.appt;
@@ -624,16 +839,23 @@ export async function handleTurn(wsRow: any, phone: string, message: string): Pr
 
   const ws = wsRow.id, convId = ctx.proposal.conversation_id, e = c.emojis, tz = c.timezone;
   const t0 = Date.now();
+  const L: Lang = await convLang(c, null, sched, message);
+  const w = W(c, L);
+  const svcName = c.mode === "service" ? (sched.service_name || ctx.proposal.quote?.solucion || null) : null;
+  const keep = { lang: L, minutes: sched.minutes, service_id: sched.service_id, service_name: sched.service_name };
+  const fF = (d: Date) => fmtFull(d, tz, L);
+  // modo "service": si pide agendar sin haber elegido servicio, la IA primero le ayuda a escogerlo
+  if (c.mode === "service" && kw && !active && !appt && !svcName) return null;
   await logMsg(ws, convId, "user", message);
   const reply = async (text: string, next: any | null, meta: Record<string, unknown> = {}) => {
-    if (next !== null) await saveSched(convId, { ...next, proposal_id: ctx.proposal.id });
+    if (next !== null) await saveSched(convId, { ...keep, ...next, proposal_id: ctx.proposal.id });
     await logMsg(ws, convId, "assistant", text, meta);
     await D.audit(ws, "sched_turn", "conversation", convId, { ms: Date.now() - t0, step: next?.step ?? sched.step, ...meta });
     return { reply: text, conversation_id: convId, lead: { phone } };
   };
   const offer = async (opts: Slot[], intro: string, round: number) => {
     if (!opts.length) return null;
-    return await reply(offerText(c, opts, intro), { step: "offered", options: opts, offered_at: new Date().toISOString(), round });
+    return await reply(offerText(c, opts, intro, L), { step: "offered", options: opts, offered_at: new Date().toISOString(), round });
   };
   const pendingId = appt && ["requested", "proposed", "hold"].includes(appt.status) ? appt.id : null;
   const tryBook = async (slot: Slot, existingId: string | null = pendingId) => {
@@ -643,20 +865,20 @@ export async function handleTurn(wsRow: any, phone: string, message: string): Pr
     if (quick === null) {
       bg((async () => {
         const r = await job;
-        const txt = r.ok ? confirmText(c, r.appt, ctx.lead) : `Lo siento, ese horario acaba de ocuparse o no pude confirmarlo. Escríbeme *agendar* y te muestro nuevas opciones.`;
-        await saveSched(convId, r.ok ? { step: "confirmed", appointment_id: r.appt.id, proposal_id: ctx.proposal.id } : { step: "idle", proposal_id: ctx.proposal.id });
+        const txt = r.ok ? confirmText(c, r.appt, ctx.lead, L, svcName) : w.lateFail;
+        await saveSched(convId, r.ok ? { ...keep, step: "confirmed", appointment_id: r.appt.id, proposal_id: ctx.proposal.id } : { ...keep, step: "idle", proposal_id: ctx.proposal.id });
         await sendClient(wsRow, c, phone, txt, convId, { kind: r.ok ? "confirm_late" : "fail_late" });
       })());
-      return await reply(`${e ? "⏳ " : ""}Estoy confirmando tu reunión con el asesor, dame unos segundos…`, { step: "booking" }, { slow: true });
+      return await reply(`${e ? "⏳ " : ""}${w.slowConfirm}`, { step: "booking" }, { slow: true });
     }
     const r = quick as BookResult;
-    if (r.ok) return await reply(confirmText(c, r.appt, ctx.lead), { step: "confirmed", appointment_id: r.appt.id }, { booked: true });
+    if (r.ok) return await reply(confirmText(c, r.appt, ctx.lead, L, svcName), { step: "confirmed", appointment_id: r.appt.id }, { booked: true });
     // ocupado o error: nunca se confirma; se ofrecen nuevas opciones reales
     let opts: Slot[] = [];
     try { opts = (await defaultOffer(wsRow, c)).filter((s) => s.start !== slot.start); } catch (_) { /* calendario no disponible */ }
-    const why = r.reason === "error" ? "No pude confirmar ese horario en el calendario en este momento." : "Ese horario acaba de ocuparse.";
-    return (await offer(opts, `${why} Estos son los espacios disponibles ahora:`, (sched.round || 1) + 1))
-      || await reply(`${why} Ya le avisé al asesor para que te contacte y acuerden la hora.`, { step: "idle" }, { error: r.error || r.reason });
+    const why = r.reason === "error" ? w.whyErr : w.whyTaken;
+    return (await offer(opts, `${why} ${w.nowAvail}`, (sched.round || 1) + 1))
+      || await reply(`${why} ${w.told}`, { step: "idle" }, { error: r.error || r.reason });
   };
 
   let rescheduled = false;
@@ -665,7 +887,7 @@ export async function handleTurn(wsRow: any, phone: string, message: string): Pr
     if (appt && appt.status === "confirmed" && (cancel || resch || (kw && !active))) {
       if (!cancel && !resch) {
         const d = new Date(appt.starts_at);
-        return await reply(`Ya tienes tu reunión agendada para el *${fmtFull(d, tz)}*${appt.meet_url ? ` (Meet: ${appt.meet_url})` : ""}. ¿Quieres cambiarla? Escríbeme *cambiar* o *cancelar*.`, null);
+        return await reply(w.already(fF(d), appt.meet_url ? ` (Meet: ${appt.meet_url})` : ""), null);
       }
       if (c.provider === "google_bridge" && appt.calendar_event_id) {
         try { await bridge("cancel_event", { calendarId: (c.advisors.find((x) => x.key === appt.advisor_key) || c.advisors[0]).calendar_id || "primary", eventId: appt.calendar_event_id }); }
@@ -673,8 +895,8 @@ export async function handleTurn(wsRow: any, phone: string, message: string): Pr
       }
       await D.admin.from("appointments").update({ status: "cancelled", updated_at: new Date().toISOString() }).eq("id", appt.id);
       await D.audit(ws, "appointment_cancelled", "appointment", appt.id, { by: "client", reschedule: resch && !cancel });
-      if (!c.dry_run) bg(D.mailAdvisor(wsRow, `❌ ${ctx.lead?.name || "Cliente"} ${resch && !cancel ? "reprogramó" : "canceló"} su reunión del ${fmtFull(new Date(appt.starts_at), tz)} (${D.quoteCode(ctx.proposal.id)})`, `<p>${D.escH(ctx.lead?.name || "El cliente")} ${resch && !cancel ? "pidió cambiar" : "canceló"} la reunión del <b>${D.escH(fmtFull(new Date(appt.starts_at), tz))}</b>. El evento se retiró del calendario.</p>`));
-      if (cancel && !resch) return await reply(`Listo, cancelé tu reunión del ${fmtFull(new Date(appt.starts_at), tz)} 👍\nCuando quieras agendar otra, escríbeme *agendar*.`, { step: "idle" });
+      if (!c.dry_run) bg(D.mailAdvisor(wsRow, `❌ ${ctx.lead?.name || "Cliente"} ${resch && !cancel ? "reprogramó" : "canceló"} su ${w.n === "appointment" ? "cita" : w.n} del ${fmtFull(new Date(appt.starts_at), tz)}${ctx.proposal.id ? ` (${D.quoteCode(ctx.proposal.id)})` : ""}`, `<p>${D.escH(ctx.lead?.name || "El cliente")} ${resch && !cancel ? "pidió cambiar" : "canceló"} la ${c.kind === "appointment" ? "cita" : "reunión"} del <b>${D.escH(fmtFull(new Date(appt.starts_at), tz))}</b>. El evento se retiró del calendario.</p>`));
+      if (cancel && !resch) return await reply(w.cancelled(fF(new Date(appt.starts_at))), { step: "idle" });
       rescheduled = true; // sigue abajo: preferencia del cliente o nueva oferta
     }
     // ---- el asesor propuso un horario: el cliente acepta o pide otro
@@ -685,7 +907,7 @@ export async function handleTurn(wsRow: any, phone: string, message: string): Pr
       }
       if (isDecline(message)) {
         await D.admin.from("appointments").update({ status: "declined", updated_at: new Date().toISOString() }).eq("id", sched.appointment_id);
-        return await reply(`Entendido. Cuando quieras retomar, escríbeme *agendar* y buscamos otro horario.`, { step: "idle" });
+        return await reply(w.retake, { step: "idle" });
       }
     }
 
@@ -705,58 +927,59 @@ export async function handleTurn(wsRow: any, phone: string, message: string): Pr
 
     // ---- no le interesa ahora
     if (active && isDecline(message)) {
-      return await reply(`Entendido${ctx.lead?.name ? ", " + String(ctx.lead.name).split(" ")[0] : ""}. Cuando quieras agendar la reunión con el asesor, escríbeme *agendar* por este chat.`, { step: "declined" }, { declined: true });
+      return await reply(w.declined(ctx.lead?.name ? String(ctx.lead.name).split(" ")[0] : ""), { step: "declined" }, { declined: true });
     }
 
     // ---- no le sirven las opciones pero no dijo cuándo
     if (active && wantsOther(message) && !parsePref(message, c)) {
-      return await reply(`Claro, buscamos otro horario. ¿Qué día y franja te quedan mejor? Por ejemplo: *el martes en la tarde* o *la próxima semana en la mañana*.`, { ...sched, step: "offered", options: sched.options || [], offered_at: new Date().toISOString() });
+      return await reply(w.askOther, { ...sched, step: "offered", options: sched.options || [], offered_at: new Date().toISOString() });
     }
 
     // ---- preferencia ("el martes en la tarde", "después de las 4", "la otra semana")
     const pref = parsePref(message, c);
     if (pref) {
-      if (pref.sameDay && (pref.dates || []).length === 1) {
+      if (pref.sameDay && (pref.dates || []).length === 1 && c.min_days_ahead > 0) {
         const opts = await defaultOffer(wsRow, c);
-        return (await offer(opts, `Para preparar bien la reunión agendamos desde el día siguiente. Estos son los espacios más cercanos (${meetingDetails(c)}):`, (sched.round || 1) + 1))
-          || await reply(`Para preparar bien la reunión agendamos desde el día siguiente. ¿Qué día te queda bien?`, { step: "offered", options: [], offered_at: new Date().toISOString() });
+        return (await offer(opts, w.sameDay(meetingDetails(c, L)), (sched.round || 1) + 1))
+          || await reply(w.sameDayAsk, { step: "offered", options: [], offered_at: new Date().toISOString() });
       }
       if (outsideAgenda(c, pref)) {
         const date = (pref.dates || [])[0];
         const mins = pref.exact ?? (pref.after != null && pref.after > 0 ? pref.after : null) ?? (pref.part === "eve" ? 18 * 60 : null);
         if (date && mins != null) return await special(zoned(date, mins, tz));
-        if (date) return await reply(`Ese día está fuera de la agenda habitual, pero puedo consultarlo con el asesor. ¿A qué hora te quedaría bien?`, { step: "ask_time", date, offered_at: new Date().toISOString(), options: sched.options || [] });
+        if (date) return await reply(w.outsideAsk, { step: "ask_time", date, offered_at: new Date().toISOString(), options: sched.options || [] });
       }
       const opts = await prefOptions(wsRow, c, pref);
       if (opts.length) {
         const exactHit = matchPref(c, opts, pref).length > 0;
-        const intro = (rescheduled ? "Listo, liberé tu horario anterior. " : "") + (exactHit ? `Estos son los espacios que tengo:` : `En ese horario no tengo espacio. Lo más cercano es:`);
+        const intro = (rescheduled ? w.released : "") + (exactHit ? w.have : w.closest);
         return (await offer(opts, intro, (sched.round || 1) + 1))!;
       }
-      return await reply(`No encuentro espacios en las próximas dos semanas con esa preferencia. Si quieres, se lo consulto directamente al asesor: dime el día y la hora que te sirven.`, { step: "offered", options: [], offered_at: new Date().toISOString() });
+      return await reply(w.none2w, { step: "offered", options: [], offered_at: new Date().toISOString() });
     }
 
     // ---- pidió agendar (palabra clave o botón del correo) o acaba de liberar su cita para cambiarla
     if (kw || rescheduled || /quiero agendar/.test(norm(message))) {
+      // modo "service" sin servicio elegido todavía: la IA primero ayuda a escoger el servicio
       const opts = await defaultOffer(wsRow, c);
-      if (rescheduled) return (await offer(opts, `Listo, liberé tu horario anterior. Estos son los espacios disponibles (${meetingDetails(c)}):`, 1))
-        || await reply(`Listo, liberé tu horario anterior. Dime qué día y hora te sirven y lo consulto con el asesor.`, { step: "offered", options: [], offered_at: new Date().toISOString() });
-      return (await offer(opts, `${e ? "📅 " : ""}¡Con gusto! Estos son los espacios disponibles para tu reunión con el asesor (${meetingDetails(c)}):`, 1))
-        || await reply(`En los próximos días no veo espacios libres en la agenda. Dime qué día y hora te sirven y se lo consulto al asesor.`, { step: "offered", options: [], offered_at: new Date().toISOString() });
+      if (rescheduled) return (await offer(opts, w.releasedOffer(meetingDetails(c, L)), 1))
+        || await reply(w.releasedAsk, { step: "offered", options: [], offered_at: new Date().toISOString() });
+      return (await offer(opts, w.kwOffer(meetingDetails(c, L)) + (svcName ? (L === "en" ? `\n_${svcName}_` : `\n_${svcName}_`) : ""), 1))
+        || await reply(w.kwNone, { step: "offered", options: [], offered_at: new Date().toISOString() });
     }
   } catch (err) {
     await D.audit(ws, "sched_error", "conversation", convId, { error: (err as Error)?.message || String(err) });
-    return await reply(`Tuve un problema consultando la agenda en este momento. Ya le avisé al asesor para que te contacte y acuerden la reunión.`, null, { error: (err as Error)?.message });
+    return await reply(w.calErr, null, { error: (err as Error)?.message });
   }
   // Mensaje que no es del agendamiento (p. ej. una pregunta sobre el servicio): sigue el flujo normal.
   return null;
 
   async function special(start: Date) {
-    if (start.getTime() < zoned(firstDay(c!), 0, tz).getTime()) {
-      return await reply(`Para preparar bien la reunión agendamos desde el día siguiente. ¿Qué otro día te sirve?`, null);
+    if (start.getTime() < zoned(firstDay(c!), 0, tz).getTime() || start.getTime() < Date.now()) {
+      return await reply(w.specialPast, null);
     }
     const ap = await createSpecialRequest(wsRow, c!, ctx!, start);
-    return await reply(`Ese horario (${fmtFull(start, tz)}) está fuera de la agenda habitual, pero ya se lo solicité al asesor. ${e ? "🙌 " : ""}Te confirmo por aquí *${deadlineTxt(new Date(ap.respond_by), tz)}*`, { step: "special_pending", appointment_id: ap.id }, { special: true });
+    return await reply(w.special(fF(start), deadlineTxt(new Date(ap.respond_by), tz, new Date(), L)), { step: "special_pending", appointment_id: ap.id }, { special: true });
   }
 }
 async function prefOptions(wsRow: any, c: SchedCfg, pref: Pref): Promise<Slot[]> {
@@ -797,10 +1020,17 @@ export async function handleAdvisorCommand(wsRow: any, message: string): Promise
   return await advisorPropose(wsRow, c, ap, zoned(date, mins, c.timezone));
 }
 async function ctxForAppt(ap: any) {
+  if (!ap.proposal_id) {
+    const conv = await loadConv(ap.conversation_id);
+    const { data: lead } = await D.admin.from("leads").select("*").eq("id", ap.lead_id).single();
+    return { proposal: pseudoProposal(conv, null), lead, conv, appt: ap };
+  }
   const { data: p } = await D.admin.from("proposals").select("id,lead_id,conversation_id,quote,diagnosis,share_token").eq("id", ap.proposal_id).single();
   const { data: lead } = await D.admin.from("leads").select("*").eq("id", p.lead_id).single();
   return { proposal: p, lead, conv: await loadConv(p.conversation_id), appt: ap };
 }
+const ctxLang = (c: SchedCfg, ctx: any): Lang => (c.lang === "en" ? "en" : c.lang === "auto" && ctx?.conv?.state?.scheduling?.lang === "en" ? "en" : "es");
+const ctxKeep = (ctx: any) => { const s = ctx?.conv?.state?.scheduling || {}; return { lang: s.lang, minutes: s.minutes, service_id: s.service_id, service_name: s.service_name }; };
 async function advisorAccept(wsRow: any, c: SchedCfg, ap: any): Promise<string> {
   const ctx = await ctxForAppt(ap);
   const r = await book(wsRow, c, ctx, { start: ap.starts_at, end: ap.ends_at, advisor: ap.advisor_key }, ap.id);
@@ -808,28 +1038,33 @@ async function advisorAccept(wsRow: any, c: SchedCfg, ap: any): Promise<string> 
     await D.admin.from("appointments").update({ status: "requested" }).eq("id", ap.id); // sigue pendiente
     return r.reason === "error" ? `No pude crear el evento en el calendario (${r.error || "error"}). Intenta de nuevo en un momento.` : `Ese horario ya está ocupado en tu calendario. Propón otro: PROPONGO ${citaCode(ap)} jueves 3 pm.`;
   }
-  await saveSched(ctx.proposal.conversation_id, { step: "confirmed", appointment_id: ap.id, proposal_id: ctx.proposal.id });
-  await sendClient(wsRow, c, ctx.lead.phone, `${c.emojis ? "🙌 " : ""}¡Buenas noticias! El asesor aceptó tu horario.\n\n` + confirmText(c, r.appt, ctx.lead), ctx.proposal.conversation_id, { kind: "special_accepted" });
+  const L = ctxLang(c, ctx);
+  await saveSched(ctx.proposal.conversation_id, { ...ctxKeep(ctx), step: "confirmed", appointment_id: ap.id, proposal_id: ctx.proposal.id });
+  await sendClient(wsRow, c, ctx.lead.phone, W(c, L).goodNews + confirmText(c, r.appt, ctx.lead, L, ctx.conv?.state?.scheduling?.service_name || null), ctx.proposal.conversation_id, { kind: "special_accepted" });
   return `✅ Listo. Reunión confirmada con ${ctx.lead?.name || "el cliente"} el ${fmtFull(new Date(ap.starts_at), c.timezone)}: ya le avisé y quedó en tu calendario.`;
 }
 async function advisorDecline(wsRow: any, c: SchedCfg, ap: any): Promise<string> {
   const ctx = await ctxForAppt(ap);
   await D.admin.from("appointments").update({ status: "declined", updated_at: new Date().toISOString() }).eq("id", ap.id);
+  const L = ctxLang(c, ctx), k = ctxKeep(ctx);
+  c = withMinutes(c, k.minutes);
   let opts: Slot[] = [];
   try { opts = await defaultOffer(wsRow, c); } catch (_) { /* sin calendario */ }
   const txt = opts.length
-    ? offerText(c, opts, `El asesor no tiene disponible ese horario, pero estos espacios sí (${meetingDetails(c)}):`)
-    : `El asesor no tiene disponible ese horario. Dime otro día y hora que te sirvan y se lo consulto.`;
-  await saveSched(ctx.proposal.conversation_id, opts.length ? { step: "offered", options: opts, offered_at: new Date().toISOString(), round: 2, proposal_id: ctx.proposal.id } : { step: "offered", options: [], offered_at: new Date().toISOString(), proposal_id: ctx.proposal.id });
+    ? offerText(c, opts, W(c, L).advDecl(meetingDetails(c, L)), L)
+    : W(c, L).advDeclAsk;
+  await saveSched(ctx.proposal.conversation_id, opts.length ? { ...k, step: "offered", options: opts, offered_at: new Date().toISOString(), round: 2, proposal_id: ctx.proposal.id } : { ...k, step: "offered", options: [], offered_at: new Date().toISOString(), proposal_id: ctx.proposal.id });
   await sendClient(wsRow, c, ctx.lead.phone, txt, ctx.proposal.conversation_id, { kind: "special_declined" });
   return `Entendido. Le ofrecí al cliente los espacios disponibles de tu agenda.`;
 }
 async function advisorPropose(wsRow: any, c: SchedCfg, ap: any, start: Date): Promise<string> {
   const ctx = await ctxForAppt(ap);
-  const end = new Date(start.getTime() + c.slot_minutes * 60000);
+  const L = ctxLang(c, ctx), k = ctxKeep(ctx);
+  const dur = Math.round((Date.parse(ap.ends_at) - Date.parse(ap.starts_at)) / 60000) || c.slot_minutes;
+  const end = new Date(start.getTime() + dur * 60000);
   await D.admin.from("appointments").update({ status: "proposed", starts_at: start.toISOString(), ends_at: end.toISOString(), updated_at: new Date().toISOString() }).eq("id", ap.id);
-  await saveSched(ctx.proposal.conversation_id, { step: "proposed", appointment_id: ap.id, offered_at: new Date().toISOString(), proposal_id: ctx.proposal.id });
-  await sendClient(wsRow, c, ctx.lead.phone, `El asesor te propone reunirse el *${fmtFull(start, c.timezone)}* (hora Colombia). ¿Te sirve? Responde *SÍ* para confirmarla o dime otra opción.`, ctx.proposal.conversation_id, { kind: "advisor_proposal" });
+  await saveSched(ctx.proposal.conversation_id, { ...k, step: "proposed", appointment_id: ap.id, offered_at: new Date().toISOString(), proposal_id: ctx.proposal.id });
+  await sendClient(wsRow, c, ctx.lead.phone, W(c, L).advPropose(fmtFull(start, c.timezone, L)), ctx.proposal.conversation_id, { kind: "advisor_proposal" });
   return `✅ Le propuse al cliente el ${fmtFull(start, c.timezone)}; te aviso cuando confirme.`;
 }
 /** Enlaces del correo del asesor (Acepto / No puedo). Devuelve a dónde redirigir. */
@@ -860,15 +1095,17 @@ export async function tick(): Promise<Record<string, number>> {
     const c = schedCfg(wsRow);
     if (!c) continue;
     const ctx = await ctxForAppt(ap);
+    const L = ctxLang(c, ctx), k = ctxKeep(ctx);
+    const cc = withMinutes(c, k.minutes);
     await notifyAdvisorRequest(wsRow, c, ctx, ap, true);
     // ¿el cliente escribió en las últimas 23 h? (ventana gratuita de WhatsApp)
     const { data: lastU } = await D.admin.from("messages").select("created_at").eq("conversation_id", ctx.proposal.conversation_id).eq("role", "user").order("created_at", { ascending: false }).limit(1).maybeSingle();
     const inWindow = lastU && Date.now() - Date.parse(lastU.created_at) < 23 * 3600000;
     let opts: Slot[] = [];
-    try { opts = await defaultOffer(wsRow, c); } catch (_) { /* noop */ }
+    try { opts = await defaultOffer(wsRow, cc); } catch (_) { /* noop */ }
     if (inWindow && opts.length) {
-      await saveSched(ctx.proposal.conversation_id, { step: "offered", options: opts, offered_at: new Date().toISOString(), round: 2, proposal_id: ctx.proposal.id, special_appointment_id: ap.id });
-      await sendClient(wsRow, c, ctx.lead.phone, offerText(c, opts, `El asesor aún no confirma el horario que pediste; sigue en revisión. Mientras tanto, para no hacerte esperar, estos son los espacios libres más cercanos (${meetingDetails(c)}):`), ctx.proposal.conversation_id, { kind: "special_overdue" });
+      await saveSched(ctx.proposal.conversation_id, { ...k, step: "offered", options: opts, offered_at: new Date().toISOString(), round: 2, proposal_id: ctx.proposal.id, special_appointment_id: ap.id });
+      await sendClient(wsRow, cc, ctx.lead.phone, offerText(cc, opts, W(cc, L).overdue(meetingDetails(cc, L)), L), ctx.proposal.conversation_id, { kind: "special_overdue" });
     }
     await D.audit(ap.workspace_id, "sched_special_overdue", "appointment", ap.id, { offered_client: !!(inWindow && opts.length) });
     out.reminders++;
