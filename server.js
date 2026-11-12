@@ -18,6 +18,45 @@ const META_APP_SECRET = process.env.META_APP_SECRET || "";
 const AI_AGENT_URL = process.env.AI_AGENT_URL || "";
 const AI_PUBLIC_KEY = process.env.AI_PUBLIC_KEY || "";
 const WORKSPACE_ID = process.env.WORKSPACE_ID || "";
+
+// Canales: el número principal (WIA) y, opcionalmente, números de demostración (p. ej. el número de pruebas de Meta)
+// que atienden con OTRO espacio de trabajo. Meta indica en cada mensaje a qué número llegó (metadata.phone_number_id).
+// DEMO_ROUTES = JSON: [{"key":"demo-spa","phone_number_id":"…","public_key":"…","workspace_id":"…","lang":"en"}]
+const MAIN_ROUTE = {key:"",phone_number_id:PHONE_NUMBER_ID,public_key:AI_PUBLIC_KEY,workspace_id:WORKSPACE_ID,lang:"es"};
+const DEMO_ROUTES = (()=>{
+  try{
+    const list=JSON.parse(process.env.DEMO_ROUTES||"[]");
+    return (Array.isArray(list)?list:[])
+      .filter(r=>r&&r.key&&r.phone_number_id&&r.public_key&&String(r.phone_number_id)!==String(PHONE_NUMBER_ID))
+      .map(r=>({key:String(r.key),phone_number_id:String(r.phone_number_id),public_key:String(r.public_key),workspace_id:r.workspace_id?String(r.workspace_id):"",lang:r.lang==="en"?"en":"es"}));
+  }catch(e){ console.error("DEMO_ROUTES inválido:",e?.message||e); return []; }
+})();
+function routeForNumber(phoneNumberId){
+  return DEMO_ROUTES.find(r=>r.phone_number_id===String(phoneNumberId||"")) || MAIN_ROUTE;
+}
+function routeByKey(key){
+  return (key && DEMO_ROUTES.find(r=>r.key===key)) || MAIN_ROUTE;
+}
+// Id de sesión: el principal sigue siendo solo el teléfono (sin cambios); los demos llevan prefijo.
+const sessionId=(route,phone)=>route.key?`${route.key}:${phone}`:String(phone);
+const phoneOf=sid=>String(sid).split(":").pop();
+const TXT={
+  es:{
+    voice:"Recibí tu nota de voz 🎧, pero no logré escucharla bien. ¿Me la puedes enviar de nuevo o escribirme tu mensaje, por favor?",
+    media:"Gracias por tu mensaje 🙏. Por ahora puedo leer mensajes de texto y notas de voz. ¿Me cuentas por escrito o en un audio en qué te puedo ayudar?",
+    sent:"Listo ✅ Tu propuesta y roadmap fueron enviados al correo que nos proporcionaste.",
+    noreply:"Gracias por escribirnos 🙌. No recibí una respuesta válida del agente.",
+    down:"Gracias por escribirnos 🙌. En este momento no puedo procesar tu mensaje automáticamente. Un asesor de nuestro equipo te responderá pronto."
+  },
+  en:{
+    voice:"I got your voice note 🎧, but I couldn't hear it clearly. Could you send it again or type your message, please?",
+    media:"Thanks for your message 🙏. For now I can read text messages and voice notes. Could you tell me in writing or in a voice note how I can help you?",
+    sent:"Done ✅ Your plan and quote were sent to the email you gave us.",
+    noreply:"Thanks for reaching out 🙌. I didn't get a valid answer this time — could you write again?",
+    down:"Thanks for reaching out 🙌. I can't process your message automatically right now. Someone from our team will reply soon."
+  }
+};
+const t=(route,k)=>(TXT[route.lang]||TXT.es)[k];
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const DATA_FILE = path.join(DATA_DIR, "conversations.json");
 
@@ -37,14 +76,15 @@ function isFreshConversationRequest(message){
 }
 function resetSession(phone){
   const all=store();
-  all[phone]={phone,lead:{},state:{},conversation_id:null,messages:[]};
+  const route=all[phone]?.route;
+  all[phone]={phone:phoneOf(phone),...(route?{route}:{}),lead:{},state:{},conversation_id:null,messages:[]};
   save(all);
   return all[phone];
 }
 function getSession(phone){
   const all=store();
   all[phone] ||= {
-    phone,
+    phone:phoneOf(phone),
     lead:{},
     state:{},
     conversation_id:null,
@@ -56,7 +96,7 @@ function getSession(phone){
 
 function updateSession(phone, patch){
   const all=store();
-  all[phone] ||= {phone,lead:{},state:{},conversation_id:null,messages:[]};
+  all[phone] ||= {phone:phoneOf(phone),lead:{},state:{},conversation_id:null,messages:[]};
   all[phone]={...all[phone],...patch};
   save(all);
   return all[phone];
@@ -64,7 +104,7 @@ function updateSession(phone, patch){
 
 function addMessage(phone, role, content){
   const all=store();
-  all[phone] ||= {phone,lead:{},state:{},conversation_id:null,messages:[]};
+  all[phone] ||= {phone:phoneOf(phone),lead:{},state:{},conversation_id:null,messages:[]};
   all[phone].messages.push({role,content,at:new Date().toISOString()});
   all[phone].messages=all[phone].messages.slice(-40);
   save(all);
@@ -167,7 +207,7 @@ app.get("/webhook",(req,res)=>{
   return res.sendStatus(403);
 });
 
-async function callAgent(action, phone, extra={}){
+async function callAgent(action, phone, extra={}, route=MAIN_ROUTE){
   const s=getSession(phone);
   if(!AI_AGENT_URL) throw new Error("AI_AGENT_URL no configurada");
 
@@ -177,10 +217,10 @@ async function callAgent(action, phone, extra={}){
     headers:{"Content-Type":"application/json"},
     body:JSON.stringify({
       action,
-      public_key:AI_PUBLIC_KEY,
-      workspace_id:WORKSPACE_ID || undefined,
+      public_key:route.public_key,
+      workspace_id:route.workspace_id || undefined,
       conversation_id:s.conversation_id || null,
-      lead:{phone,...s.lead},
+      lead:{phone:phoneOf(phone),...s.lead},
       state:s.state,
       history:s.messages.slice(-16),
       ...extra
@@ -209,10 +249,10 @@ async function callAgent(action, phone, extra={}){
 }
 
 // Transcribe una nota de voz de WhatsApp vía ci-agent (action "transcribe"). Devuelve "" si no se pudo.
-async function transcribeVoice(mediaId){
-  if(!mediaId || !AI_AGENT_URL || !AI_PUBLIC_KEY) return "";
+async function transcribeVoice(mediaId, route=MAIN_ROUTE){
+  if(!mediaId || !AI_AGENT_URL || !route.public_key) return "";
   try{
-    const r=await fetch(AI_AGENT_URL,{method:"POST",signal:AbortSignal.timeout(50000),headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"transcribe",public_key:AI_PUBLIC_KEY,media_id:mediaId})});
+    const r=await fetch(AI_AGENT_URL,{method:"POST",signal:AbortSignal.timeout(50000),headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"transcribe",public_key:route.public_key,media_id:mediaId})});
     const d=await r.json().catch(()=>({}));
     if(!r.ok){ console.error(new Date().toISOString(),"Transcripción",r.status,JSON.stringify(d).slice(0,300)); return ""; }
     return String(d.text||"").trim();
@@ -222,9 +262,9 @@ async function transcribeVoice(mediaId){
   }
 }
 
-async function askAI(message, phone, newConversation=false){
+async function askAI(message, phone, newConversation=false, route=MAIN_ROUTE){
   try{
-    const data=await callAgent("chat",phone,{message,...(newConversation?{new_conversation:true}: {})});
+    const data=await callAgent("chat",phone,{message,...(newConversation?{new_conversation:true}: {})},route);
 
     // Persistir explícitamente la propuesta/autorización devuelta por ci-agent.
     // Esto evita perder el vínculo entre la conversación actual y el envío automático.
@@ -242,10 +282,10 @@ async function askAI(message, phone, newConversation=false){
       });
     }
 
-    return data.reply || "Gracias por escribirnos 🙌. No recibí una respuesta válida del agente.";
+    return data.reply || t(route,"noreply");
   }catch(error){
     console.error(new Date().toISOString(),"Error chat:",error?.message||error);
-    return "Gracias por escribirnos 🙌. En este momento no puedo procesar tu mensaje automáticamente. Un asesor de nuestro equipo te responderá pronto.";
+    return t(route,"down");
   }
 }
 
@@ -268,7 +308,7 @@ function getProposalId(state, lead){
   return null;
 }
 
-async function maybeApproveAndSend(phone){
+async function maybeApproveAndSend(phone, route=MAIN_ROUTE){
   const session=getSession(phone);
   const proposalId=getProposalId(session.state,session.lead);
   const autoSendToken=session.state?.auto_send_token;
@@ -280,8 +320,8 @@ async function maybeApproveAndSend(phone){
     const sent=await callAgent("auto_send",phone,{
       proposal_id:proposalId,
       auto_send_token:autoSendToken,
-      public_key:AI_PUBLIC_KEY
-    });
+      public_key:route.public_key
+    },route);
 
     const sentOk=sent?.sent===true || sent?.ok===true || sent?.already_sent===true;
 
@@ -302,9 +342,10 @@ async function maybeApproveAndSend(phone){
   }
 }
 
-async function sendWhatsAppText(to,body){
-  if(!ACCESS_TOKEN||!PHONE_NUMBER_ID) throw new Error("WhatsApp credentials are not configured");
-  const url=`https://graph.facebook.com/v23.0/${PHONE_NUMBER_ID}/messages`;
+async function sendWhatsAppText(to,body,route=MAIN_ROUTE){
+  const phoneNumberId=route.phone_number_id||PHONE_NUMBER_ID;
+  if(!ACCESS_TOKEN||!phoneNumberId) throw new Error("WhatsApp credentials are not configured");
+  const url=`https://graph.facebook.com/v23.0/${phoneNumberId}/messages`;
   const response=await fetch(url,{
     method:"POST",
     headers:{
@@ -354,48 +395,53 @@ app.post("/webhook",async(req,res)=>{
   try{
     for(const entry of (req.body.entry||[])){
       for(const change of (entry.changes||[])){
+        const route=routeForNumber(change.value?.metadata?.phone_number_id);
         for(const message of (change.value?.messages||[])){
           if(!firstTime(message.id)) continue;
-          const phone=message.from;
-          if(!phone) continue;
+          const from=message.from;
+          if(!from) continue;
+          const phone=sessionId(route,from); // id de sesión (igual al teléfono en el número principal)
+          const send=body=>sendWhatsAppText(from,body,route);
+          if(route.key){ const all=store(); if(!all[phone]?.route){ getSession(phone); updateSession(phone,{route:route.key}); } }
           let text="";
           if(message.type==="text"){
             text=message.text?.body?.trim()||"";
           }else if(message.type==="audio"){
             // Nota de voz: se transcribe en ci-agent (Gemini) y se procesa como texto.
-            text=await transcribeVoice(message.audio?.id);
+            text=await transcribeVoice(message.audio?.id,route);
             if(!text){
-              try{ await sendWhatsAppText(phone,"Recibí tu nota de voz 🎧, pero no logré escucharla bien. ¿Me la puedes enviar de nuevo o escribirme tu mensaje, por favor?"); }catch(e){ console.error(new Date().toISOString(),"Aviso audio:",e?.message||e); }
+              try{ await send(t(route,"voice")); }catch(e){ console.error(new Date().toISOString(),"Aviso audio:",e?.message||e); }
               continue;
             }
             console.log(new Date().toISOString(),"Nota de voz transcrita de ...",String(phone).slice(-4));
           }else if(["image","video","document","location","contacts"].includes(message.type)){
-            try{ await sendWhatsAppText(phone,"Gracias por tu mensaje 🙏. Por ahora puedo leer mensajes de texto y notas de voz. ¿Me cuentas por escrito o en un audio en qué te puedo ayudar?"); }catch(e){ console.error(new Date().toISOString(),"Aviso multimedia:",e?.message||e); }
+            try{ await send(t(route,"media")); }catch(e){ console.error(new Date().toISOString(),"Aviso multimedia:",e?.message||e); }
             continue;
           }
           if(!text) continue; // reacciones, stickers y otros eventos se ignoran
 
           // Una nueva solicitud de servicios inicia una sesión comercial limpia.
           // No reutilizar nombre, email, propuesta, sector ni estado de una conversación anterior.
-          if(isFreshConversationRequest(text)) resetSession(phone);
+          const fresh=isFreshConversationRequest(text) || (route.lang==="en" && /^\s*(hi|hello|hey|good (morning|afternoon|evening))\b/i.test(text));
+          if(fresh) resetSession(phone);
 
           try{
             addMessage(phone,"user",text);
-            const reply=await askAI(text,phone,isFreshConversationRequest(text));
+            const reply=await askAI(text,phone,fresh,route);
             addMessage(phone,"assistant",reply);
-            await sendWhatsAppText(phone,reply);
+            await send(reply);
 
-            const emailResult=await maybeApproveAndSend(phone);
+            const emailResult=await maybeApproveAndSend(phone,route);
             if(emailResult?.sent===true){
-              await sendWhatsAppText(phone,"Listo ✅ Tu propuesta y roadmap fueron enviados al correo que nos proporcionaste.");
+              await send(t(route,"sent"));
               console.log(new Date().toISOString(),"Propuesta enviada por email a ...",String(phone).slice(-4));
             } else {
               // Watchdog: si el primer intento falla, reintenta a los 15s, 45s, 90s y 150s (siempre dentro de 3 minutos).
               [15000,45000,90000,150000].forEach((delay)=>setTimeout(async()=>{
                 try{
-                  const result=await maybeApproveAndSend(phone);
+                  const result=await maybeApproveAndSend(phone,route);
                   if(result?.sent===true){
-                    await sendWhatsAppText(phone,"Listo ✅ Tu propuesta y roadmap fueron enviados al correo que nos proporcionaste.");
+                    await send(t(route,"sent"));
                     console.log(new Date().toISOString(),"Propuesta enviada por email mediante reintento a ...",String(phone).slice(-4));
                   }
                 }catch(error){
@@ -404,7 +450,7 @@ app.post("/webhook",async(req,res)=>{
               },delay));
             }
 
-            console.log(new Date().toISOString(),"Respuesta enviada a ...",String(phone).slice(-4));
+            console.log(new Date().toISOString(),`Respuesta enviada${route.key?` [${route.key}]`:""} a ...`,String(from).slice(-4));
           }catch(error){
             console.error(new Date().toISOString(),"Error procesando mensaje:",error?.message||error);
           }
@@ -435,10 +481,11 @@ async function recoverPendingEmails(){
     for(const [phone,session] of Object.entries(all)){
       if(!session?.state?.proposal_id || !session?.state?.auto_send_token || !hasEmail(session?.lead)) continue;
       if(session?.state?.email_result?.ok===true) continue;
-      const result=await maybeApproveAndSend(phone);
+      const route=routeByKey(session.route);
+      const result=await maybeApproveAndSend(phone,route);
       if(result?.sent===true){
         try{
-          await sendWhatsAppText(phone,"Listo ✅ Tu propuesta y roadmap fueron enviados al correo que nos proporcionaste.");
+          await sendWhatsAppText(phoneOf(phone),t(route,"sent"),route);
         }catch(error){
           console.error(new Date().toISOString(),"Email enviado pero no se pudo confirmar por WhatsApp:",error?.message||error);
         }
@@ -451,5 +498,6 @@ async function recoverPendingEmails(){
 
 app.listen(PORT,async()=>{
   console.log(`AI Cliente Inteligente listening on :${PORT}`);
+  if(DEMO_ROUTES.length) console.log("Números de demostración activos:",DEMO_ROUTES.map(r=>r.key).join(", "));
   await recoverPendingEmails();
 });
