@@ -46,7 +46,7 @@ export type SchedCfg = {
   advisors: Advisor[]; emojis: boolean; company: string; bot_whatsapp: string;
   mode: "after_quote" | "service"; kind: "meeting" | "appointment"; lang: "es" | "en" | "auto";
   tz_label: { es: string; en: string }; service_minutes: Record<string, number>; grid_minutes: number;
-  min_notice_minutes: number; wa_phone_id: string | null;
+  min_notice_minutes: number; wa_phone_id: string | null; service_names: Record<string, { es?: string; en?: string }>;
 };
 export type Lang = "es" | "en";
 export function schedCfg(ws: any): SchedCfg | null {
@@ -97,6 +97,7 @@ export function schedCfg(ws: any): SchedCfg | null {
     grid_minutes: Number(c.grid_minutes) > 0 ? Number(c.grid_minutes) : 0,
     min_notice_minutes: Number(c.min_notice_minutes) > 0 ? Number(c.min_notice_minutes) : 0,
     wa_phone_id: c.wa_phone_id ? String(c.wa_phone_id) : null,
+    service_names: c.service_names && typeof c.service_names === "object" ? c.service_names : {},
   };
 }
 
@@ -806,6 +807,7 @@ export async function offerForService(wsRow: any, conv: any, leadId: string | nu
     const { data: ex } = await D.admin.from("appointments").select("id").eq("workspace_id", wsRow.id).eq("lead_id", leadId).in("status", ACTIVE).gte("ends_at", new Date().toISOString()).limit(1).maybeSingle();
     if (ex) return null;
   }
+  serviceName = c0.service_names[serviceId]?.[lang] || serviceName; // nombre del servicio en el idioma del cliente
   const mins = c0.service_minutes[serviceId] || null;
   const c = withMinutes(c0, mins);
   const w = W(c, lang);

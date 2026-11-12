@@ -849,7 +849,8 @@ async function actionChat(body: any, caller: Caller, execId: string) {
       if (of) {
         // la oferta de horarios reemplaza el cierre "¿te envío la cotización?" que a veces agrega la IA
         const paras = out.reply.trim().split(/\n\s*\n/);
-        while (paras.length > 1 && /cotizaci|presupuesto|propuesta|roadmap|\bquote\b|proposal|estimate/i.test(paras[paras.length - 1]) && /[?¿]/.test(paras[paras.length - 1])) paras.pop();
+        const closing = (x: string) => (/cotizaci|presupuesto|propuesta|roadmap|\bquote\b|proposal|estimate/i.test(x) && /[?¿]/.test(x)) || (/horario|disponib|agendar|\btimes\b|availab|\bbook\b/i.test(x) && /:\s*$/.test(x.trim()));
+        while (paras.length > 1 && closing(paras[paras.length - 1])) paras.pop();
         out.reply = `${paras.join("\n\n")}\n\n${of.text}`; (newState as any).scheduling = of.sched;
       }
     } catch (e) { await logError(ws, execId, "GL-CI-03", "SCHED_OFFER", (e as Error)?.message || String(e), { conversation_id: conv.id }); }
