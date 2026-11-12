@@ -848,8 +848,10 @@ export async function handleTurn(wsRow: any, phone: string, message: string): Pr
   const fF = (d: Date) => fmtFull(d, tz, L);
   // modo "service": si pide agendar sin haber elegido servicio, la IA primero le ayuda a escogerlo
   if (c.mode === "service" && kw && !active && !appt && !svcName) return null;
-  await logMsg(ws, convId, "user", message);
+  // v71: un saludo nunca lo toma el agendamiento (lo atiende la conversación normal)
+  if (c.mode === "service" && /^\s*(hola|holi|buen[oa]s?(\s+(d[ií]as|tardes|noches))?|saludos|hi|hello|hey|good\s+(morning|afternoon|evening))\b[\s!¡.,😊👋]*\w{0,12}[\s!¡.,😊👋]*$/i.test(message)) return null;
   const reply = async (text: string, next: any | null, meta: Record<string, unknown> = {}) => {
+    await logMsg(ws, convId, "user", message); // v71: se registra solo si el agendamiento responde (sin duplicados)
     if (next !== null) await saveSched(convId, { ...keep, ...next, proposal_id: ctx.proposal.id });
     await logMsg(ws, convId, "assistant", text, meta);
     await D.audit(ws, "sched_turn", "conversation", convId, { ms: Date.now() - t0, step: next?.step ?? sched.step, ...meta });

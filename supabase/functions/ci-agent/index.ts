@@ -1,4 +1,6 @@
 // SIERRA — Asistente Comercial Inteligente: motor del agente (Supabase Edge Function "ci-agent")
+// v71 (2026-11-12): velocidad — tope de 20 s para la IA (antes 45 s), modelos en paralelo, modelos saturados se saltan 2 min;
+//   bienvenida instantánea por idioma (settings.welcome_text_en / welcome_text_es).
 // v70 (2026-11-12): un saludo inicia conversación nueva si pasaron más de settings.resume_minutes (10 min por defecto; antes 2 h).
 // v69 (2026-11-12): marca por espacio (correo "spa" bilingüe, remitente, roadmap propio), idioma fijo por conversación (settings.lang_mode=auto),
 //   ventana de avisos del asesor compartida entre espacios con el mismo WhatsApp y etiqueta del negocio en los avisos.
@@ -391,8 +393,9 @@ async function callGemini(key: string, system: string, messages: { role: string;
   const pref = await cfg("CI_MODEL");
   const live = await geminiModels(key);
   const now0 = Date.now();
-  const all = ([...new Set([pref && pref.startsWith("gemini") ? pref : null, ...live, "gemini-flash-latest", "gemini-2.5-flash", "gemini-flash-lite-latest", "gemini-2.5-flash-lite"].filter(Boolean))] as string[])
-    .filter((m) => (gemDead.get(m) || 0) < now0);
+  const all0 = [...new Set([pref && pref.startsWith("gemini") ? pref : null, ...live, "gemini-flash-latest", "gemini-2.5-flash", "gemini-flash-lite-latest", "gemini-2.5-flash-lite"].filter(Boolean))] as string[];
+  const alive = all0.filter((m) => (gemDead.get(m) || 0) < now0);
+  const all = alive.length ? alive : all0; // si todos están en pausa, se intenta igual
   // v63 (velocidad): primero los modelos "lite" (más rápidos); los demás quedan de respaldo.
   const models = [...all.filter((m) => m === pref), ...all.filter((m) => m !== pref && /lite/.test(m)), ...all.filter((m) => m !== pref && !/lite/.test(m))];
   const payload = JSON.stringify({
@@ -414,25 +417,24 @@ async function callGemini(key: string, system: string, messages: { role: string;
     } catch (_e) { errs.push(`Gemini ${model} timeout`); throw new Error("timeout"); }
     const body = await res.json().catch(() => ({}));
     if (res.status === 404 || (res.status === 400 && /not found|not supported/i.test(JSON.stringify(body)))) { gemDead.set(model, Date.now() + 6 * 3600 * 1000); errs.push(`modelo ${model} no disponible`); throw new Error("dead"); }
-    if (!res.ok) { errs.push(`Gemini ${model} ${res.status}`); throw new Error(String(res.status)); }
+    if (!res.ok) { if (res.status === 503 || res.status === 429) gemDead.set(model, Date.now() + 2 * 60 * 1000); errs.push(`Gemini ${model} ${res.status}`); throw new Error(String(res.status)); } // v71: saturado → se salta 2 min
     // deno-lint-ignore no-explicit-any
     const fc = (body.candidates?.[0]?.content?.parts || []).find((p: any) => p.functionCall)?.functionCall;
     if (!fc?.args?.reply) { errs.push(`Gemini ${model} sin estructura`); throw new Error("shape"); }
     return { out: fc.args, model, usage: body.usageMetadata };
   };
-  const deadline = Date.now() + 45000; // el canal (WhatsApp) espera máx. ~55 s
-  // Ronda rápida: dos modelos en paralelo; gana el primero que responda bien.
-  const fast = models.slice(0, 2);
-  if (fast.length) {
-    try { return await Promise.any(fast.map((m) => tryModel(m, 15000))); } catch (_e) { /* sigue con el resto */ }
+  // v71: máximo ~20 s en total; si la IA no responde, el respaldo contesta (mejor rápido que esperar 45 s).
+  const deadline = Date.now() + 20000;
+  // Ronda 1: tres modelos en paralelo; gana el primero que responda bien.
+  const r1 = models.slice(0, 3);
+  if (r1.length) {
+    try { return await Promise.any(r1.map((m) => tryModel(m, 11000))); } catch (_e) { /* ronda 2 */ }
   }
-  for (let round = 0; round < 3 && deadline - Date.now() > 3000; round++) {
-    if (round > 0) await sleep(800);
-    for (const model of (round === 0 ? models.slice(2) : models)) {
-      const left = deadline - Date.now();
-      if (left < 3000) break;
-      try { return await tryModel(model, Math.min(12000, left)); } catch (_e) { /* siguiente modelo */ }
-    }
+  // Ronda 2: el resto, también en paralelo, con el tiempo que quede.
+  const left = deadline - Date.now();
+  const r2 = models.slice(3, 6).filter((m) => (gemDead.get(m) || 0) < Date.now());
+  if (r2.length && left > 2500) {
+    try { return await Promise.any(r2.map((m) => tryModel(m, left))); } catch (_e) { /* respaldo */ }
   }
   throw new StepError("GL-CI-02", "LLM_ERROR", "Gemini: " + (errs.join(" | ") || "sin respuesta"), 502);
 }
@@ -819,9 +821,11 @@ async function actionChat(body: any, caller: Caller, execId: string) {
   let out: any, model: string, usage: unknown;
   // v63: saludo puro al inicio → bienvenida inmediata, sin esperar a la IA.
   const pureGreeting = !greeted && isGreeting(message) && message.trim().split(/\s+/).length <= 4 && !/[?¿]|cotiz|precio|servicio|quiero|necesito/i.test(message);
-  const welcomeTxt = String(settings.welcome_text || "").trim();
+  const wl = state.lang === "en" ? "en" : state.lang === "es" ? "es" : null;
+  const welcomeTxt = String((wl && settings[`welcome_text_${wl}`]) || settings.welcome_text || "").trim();
+  const welcomeAsk = wl === "en" ? "How can I help you today?" : "¿En qué te puedo servir hoy?";
   if (pureGreeting && welcomeTxt) {
-    out = { reply: welcomeTxt + (settings.use_emojis === false ? "\n¿En qué te puedo servir hoy?" : "\n¿En qué te puedo servir hoy? 😊"), intent: "saludo", confirmed: [], hypotheses: [], missing: [], service_match: { service_id: null, reason: "saludo" }, out_of_catalog: false, advance_confirmed: false, ready_for_proposal: false, sources_used: [] };
+    out = { reply: welcomeTxt + (settings.use_emojis === false ? `\n${welcomeAsk}` : `\n${welcomeAsk} 😊`), intent: "saludo", confirmed: [], hypotheses: [], missing: [], service_match: { service_id: null, reason: "saludo" }, out_of_catalog: false, advance_confirmed: false, ready_for_proposal: false, sources_used: [] };
     model = "welcome"; usage = null;
   } else try {
     ({ out, model, usage } = await callLLM(systemPrompt(company, catalog, kdocs, state, leadInfo, bundleInfo, greeted, lines) + (schedCfg(wsRow)?.mode === "service" ? BOOKING_RULES : "") + (langAuto ? langRule(state.lang) : ""), recent));
