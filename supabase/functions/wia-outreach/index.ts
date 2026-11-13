@@ -2,7 +2,7 @@
 // en public.outreach_emails. No recibe destinatarios por la petición: solo procesa filas en cola.
 import { createClient } from "npm:@supabase/supabase-js@2";
 const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, { auth: { persistSession: false } });
-const ASSETS = "https://raw.githubusercontent.com/williuribe081982-create/ai-cliente-inteligente/7ce9b77aef4313b3acf60ff85fad5bc34b5dcc11/media/outreach/";
+const ASSETS = "https://raw.githubusercontent.com/williuribe081982-create/ai-cliente-inteligente/4ce0c4cdd06a8a9de231ab1cf443f06bf001861e/media/outreach/";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function secret(n: string) { const e = Deno.env.get(n); if (e) return e; const { data } = await admin.rpc("ci_get_platform_secret", { p_name: n }); return (data as string) || null; }
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
