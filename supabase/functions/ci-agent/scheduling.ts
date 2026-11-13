@@ -673,10 +673,10 @@ function confirmText(c: SchedCfg, appt: any, lead: any, lang: Lang = "es", svcNa
   const svc = svcName ? `${e ? "💆 " : ""}${svcName}\n` : "";
   const plan = planUrl ? (en ? `\n\n${e ? "✨ " : ""}*Your personalized plan with Aurora* (every step and how to prepare):\n${planUrl}` : `\n\n${e ? "✨ " : ""}*Tu plan personalizado con Aurora* (cada paso y cómo prepararte):\n${planUrl}`) : "";
   const tail = !c.allow_changes
-    ? (lead?.email ? "" : (en ? "If you'd also like the confirmation by email, send me your full name and email." : "Si también quieres la confirmación por correo, envíame tu nombre completo y tu correo."))
+    ? (lead?.email ? "" : (en ? "📝 To complete your registration, reply with your *full name* and *email* and I'll send you your booking receipt." : "📝 Para completar tu registro, escríbeme tu *nombre completo* y tu *correo* y te envío el comprobante de tu cita."))
     : lead?.email
     ? (en ? "If you need to change it, just write me here." : "Si necesitas cambiarla, escríbeme por aquí.")
-    : (en ? "If you'd also like the confirmation by email, send me your full name and email. If you need to change the appointment, write me here." : "Si también quieres la confirmación por correo, envíame tu nombre completo y tu correo. Si necesitas cambiar la cita, escríbeme por aquí.");
+    : (en ? "📝 To complete your registration, reply with your *full name* and *email* and I'll send you your booking receipt. If you need to change the appointment, write me here." : "📝 Para completar tu registro, escríbeme tu *nombre completo* y tu *correo* y te envío el comprobante de tu cita. Si necesitas cambiar la cita, escríbeme por aquí.");
   return `${e ? "✅ " : ""}${head}\n${svc}${e ? "📅 " : ""}${fmtDayCap(d, c.timezone, lang)}, ${fmtTime(d, c.timezone, lang)} (${c.tz_label[lang]}, ${fmtDur(mins)})\n${where}${mail}${plan}${tail ? `\n\n${tail}` : ""}`;
 }
 async function notifyAdvisorBooked(wsRow: any, c: SchedCfg, ctx: any, appt: any) {

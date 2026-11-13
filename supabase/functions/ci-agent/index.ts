@@ -1187,11 +1187,11 @@ async function spaEmail(ws: any, p: any, viewUrl: string | null) {
   const lav = s.accent_color || "#c9a0dc", deep = s.brand_color || "#1c1430";
   const logo = s.logo_url ? `<img src="${escH(s.logo_url)}" alt="${escH(company)}" style="max-width:200px;height:auto;margin:0 auto 6px;display:block">` : "";
   const T = en ? {
-    h: "Your personalized plan", hi: first ? `Hi ${escH(first)},` : "Hi,", p1: `thank you for choosing ${escH(company)}. Here is your personalized plan for <b>${escH(svcName)}</b>: every step, what's included and how to prepare. Aurora, your virtual guide, will walk you through it.`,
-    appt: "Your appointment", inv: "Your investment", btn: "✨ View my plan with Aurora", foot: "Questions? Just reply to this email or write us on WhatsApp.", subj: `Your personalized plan: ${svcName} — ${company}`,
+    h: "Booking receipt", hi: first ? `Hi ${escH(first)},` : "Hi,", p1: `your registration with ${escH(company)} is complete. This is the receipt for your appointment. Your personalized plan with Aurora is always one tap away below.`,
+    appt: "Your appointment", inv: "Your investment", btn: "✨ View my plan with Aurora", foot: "Questions or changes? Just reply to this email or write us on WhatsApp.", subj: `Booking receipt: ${svcName} — ${company}`,
   } : {
-    h: "Tu plan personalizado", hi: first ? `Hola ${escH(first)},` : "Hola,", p1: `gracias por elegir ${escH(company)}. Aquí tienes tu plan personalizado de <b>${escH(svcName)}</b>: cada paso, lo que incluye y cómo prepararte. Aurora, tu guía virtual, te lo explica.`,
-    appt: "Tu cita", inv: "Tu inversión", btn: "✨ Ver mi plan con Aurora", foot: "¿Preguntas? Responde este correo o escríbenos por WhatsApp.", subj: `Tu plan personalizado: ${svcName} — ${company}`,
+    h: "Comprobante de tu cita", hi: first ? `Hola ${escH(first)},` : "Hola,", p1: `tu registro en ${escH(company)} quedó completo. Este es el comprobante de tu cita. Tu plan personalizado con Aurora siempre está a un clic, aquí abajo.`,
+    appt: "Tu cita", inv: "Tu inversión", btn: "✨ Ver mi plan con Aurora", foot: "¿Preguntas o cambios? Responde este correo o escríbenos por WhatsApp.", subj: `Comprobante de tu cita: ${svcName} — ${company}`,
   };
   const price = q.inversion?.display ? `${escH(q.inversion.display)}${en ? " + tax" : " + impuestos"}` : "";
   const html = `<div style="background:#f4eef9;padding:28px 12px;font-family:Arial,Helvetica,sans-serif">
