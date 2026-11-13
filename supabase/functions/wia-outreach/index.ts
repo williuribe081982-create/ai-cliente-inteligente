@@ -13,14 +13,18 @@ Deno.serve(async () => {
   if (!relay || !rkey) return Response.json({ ok: false, error: "relay not configured" }, { status: 500 });
   const { data: rows } = await admin.from("outreach_emails").select("*").eq("status", "queued").lte("send_after", new Date().toISOString()).order("priority").limit(5);
   if (!rows?.length) return Response.json({ ok: true, sent: 0 });
-  const tpl = await (await fetch(ASSETS + "spas-en.html")).text();
-  const vid = b64(new Uint8Array(await (await fetch(ASSETS + "SIERRA_for_Spas_demo.mp4")).arrayBuffer()));
+  const tpls: Record<string, string> = {};
+  let vid: string | null = null;
   const out: unknown[] = [];
   for (const r of rows) {
     await admin.from("outreach_emails").update({ status: "sending" }).eq("id", r.id).eq("status", "queued");
-    const html = tpl.replace("[Name] · [Spa name]", esc(r.greeting || `${r.spa_name} Team`));
+    const t = r.template || "spas-en";
+    tpls[t] ??= await (await fetch(ASSETS + t + ".html")).text();
+    const greet = esc(r.greeting || `${r.spa_name} Team`);
+    const html = tpls[t].replace("[Name] · [Spa name]", greet).replaceAll("{{GREETING}}", greet).replaceAll("{{SPA_URL}}", encodeURIComponent(r.spa_name));
+    if (r.attach_video && !vid) vid = b64(new Uint8Array(await (await fetch(ASSETS + "SIERRA_for_Spas_demo.mp4")).arrayBuffer()));
     const payload = { secret: rkey, key: r.id, to: [r.to_email], subject: r.subject, html, reply_to: "wia.soluciones@gmail.com", from_name: "WIA Soluciones Inteligentes",
-      attachments: [{ filename: "SIERRA_for_Spas_demo.mp4", content: vid, content_type: "video/mp4" }] };
+      attachments: r.attach_video ? [{ filename: "SIERRA_for_Spas_demo.mp4", content: vid, content_type: "video/mp4" }] : [] };
     let res: Record<string, unknown> = {};
     try {
       const resp = await fetch(relay, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload), redirect: "manual", signal: AbortSignal.timeout(90000) });
