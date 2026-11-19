@@ -1,4 +1,5 @@
 // SIERRA — Asistente Comercial Inteligente: motor del agente (Supabase Edge Function "ci-agent")
+// v76 (2026-11-18): correo del roadmap en formato personal (texto, sin imágenes ni emojis) para evitar la carpeta de spam.
 // v73 (2026-11-12): settings.scheduling.allow_changes=false → cambios/cancelaciones solo con el negocio (contact_whatsapp).
 // v72 (2026-11-12): roadmap de la cita sin cotización (action "appt_view", enlace /r/{cita} en la confirmación).
 // v71 (2026-11-12): velocidad — tope de 20 s para la IA (antes 45 s), modelos en paralelo, modelos saturados se saltan 2 min;
@@ -1211,26 +1212,27 @@ ${viewUrl ? `<div style="text-align:center;margin:24px 0 8px"><a href="${escH(vi
 // Ficha del prospecto para el asesor humano (se envía cuando el cliente recibe su cotización).
 // deno-lint-ignore no-explicit-any
 async function sendRoadmapMail(ws: any, p: any, to: string, viewUrl: string, bookUrl: string | null) {
+  // v76 (2026-11-18): correo personal y sencillo para que no caiga en spam — sin imágenes, sin emojis,
+  // sin fondo oscuro ni botones; texto con un solo enlace principal (Gmail marcaba el diseño anterior como promoción/phishing).
   const s = ws.settings || {};
   const q = p.quote || {};
   const company = s.company_name || ws.name || "WIA · Soluciones Inteligentes";
-  const client = q.cliente?.nombre || q.cliente?.empresa || "";
-  const logo = s.logo_url ? `<img src="${escH(s.logo_url)}" alt="${escH(company)}" style="max-width:220px;height:auto;margin:0 auto 10px;display:block">` : "";
-  const btn = (href: string, label: string, bg: string, fg: string) => `<a href="${escH(href)}" style="display:inline-block;background:${bg};color:${fg};text-decoration:none;padding:15px 30px;border-radius:999px;font-weight:700;font-size:16px;margin:6px">${label}</a>`;
-  const html = `<div style="background:#030b1a;padding:28px 12px;font-family:Arial,Helvetica,sans-serif">
-<div style="max-width:600px;margin:0 auto;background:#071430;border:1px solid #1d3a66;border-radius:18px;padding:34px 26px;text-align:center;color:#e8f1ff">
-${logo}<div style="font-size:12px;letter-spacing:3px;text-transform:uppercase;color:#9fe0ff;margin-top:6px">Arquitectura empresarial con IA</div>
-<h1 style="font-size:26px;margin:22px 0 8px;color:#ffffff">Tu Roadmap interactivo</h1>
-<div style="font-size:17px;color:#22a6ff;font-weight:700">${escH(q.solucion || "")}</div>
-<p style="font-size:15px;line-height:1.7;color:#c9d8ef;margin:20px 0">${client ? `Hola ${escH(client)}, ` : ""}aquí tienes el plan paso a paso de tu solución: etapas, entregables y tiempos, en una presentación interactiva que puedes recorrer desde el celular o el computador.</p>
-<div style="margin:22px 0">${btn(viewUrl, "🚀 Ver mi roadmap interactivo", "#22a6ff", "#031226")}</div>
-${bookUrl ? `<div>${btn(bookUrl, "📅 Agendar reunión", "#16264a", "#e8f1ff")}</div>` : ""}
-<p style="font-size:13px;color:#7f93b5;margin-top:26px">Código de cotización: <b>${quoteCode(p.id)}</b> · La cotización formal te llegó en el correo anterior.</p>
-</div><div style="text-align:center;font-size:12px;color:#5d6f8f;margin-top:14px">${escH(company)}</div></div>`;
+  const client = String(q.cliente?.nombre || "").trim().split(/\s+/)[0] || "";
+  const sol = q.solucion || "tu solución";
+  const asesor = `Equipo ${company}`;
+  const a = (href: string, label: string) => `<a href="${escH(href)}" style="color:#0b63c5">${label}</a>`;
+  const html = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.6;color:#222;max-width:560px">
+<p>${client ? `Hola ${escH(client)},` : "Hola,"}</p>
+<p>Como te comenté, aquí tienes el plan de trabajo de <b>${escH(sol)}</b>, paso a paso: qué hacemos en cada etapa, qué recibes y qué necesitamos de ti.</p>
+<p>Puedes verlo aquí: ${a(viewUrl, "abrir el plan de trabajo")}</p>
+${bookUrl ? `<p>Si quieres revisarlo juntos, ${a(bookUrl, "agenda una reunión")} o responde este correo.</p>` : `<p>Si tienes dudas, responde este correo y te ayudo.</p>`}
+<p>Código de tu cotización: ${quoteCode(p.id)}</p>
+<p>Saludos,<br>${escH(asesor)}<br>${escH(company)}</p>
+</div>`;
   const key = await cfg("RESEND_API_KEY");
   const from = s.email_from || (await cfg("EMAIL_FROM")) || "SIERRA <onboarding@resend.dev>";
   const r = await sendEmail({ method: "POST", headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ from, to: [to], subject: `Tu Roadmap interactivo: ${q.solucion || "tu solución"} — ${company}`, html, reply_to: s.contact_email || undefined }) });
+    body: JSON.stringify({ from, to: [to], subject: `${client ? client + ", tu" : "Tu"} plan de trabajo para ${sol}`, html, reply_to: s.contact_email || undefined }) });
   await audit(ws.id, "roadmap_email", "proposal", p.id, { ok: r.ok, recipient: to });
 }
 // deno-lint-ignore no-explicit-any
